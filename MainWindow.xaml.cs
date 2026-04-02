@@ -45,9 +45,9 @@ namespace CNCSS
         private readonly GeometryModel3D _fluteModel = new();
         private readonly GeometryModel3D _shankModel = new();
 
-        private const double RES_HIGH = 0.1;
-        private const double RES_MEDIUM = 0.3;
-        private const double RES_COARSE = 0.6;
+        private const double RES_HIGH = ProjectConstants.RES_HIGH;
+        private const double RES_MEDIUM = ProjectConstants.RES_MEDIUM;
+        private const double RES_COARSE = ProjectConstants.RES_COARSE;
 
         private double _selectedResolution = RES_MEDIUM;
 

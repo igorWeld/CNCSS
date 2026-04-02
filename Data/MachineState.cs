@@ -7,12 +7,12 @@ namespace CNCSS.Data
     public class MachineState
     {
         // Константы домашней позиции (Home)
-        public const double HOME_X = 255.0;
-        public const double HOME_Y = 255.0;
-        public const double HOME_Z = 255.0;
+        public const double HOME_X = ProjectConstants.DEFAULT_HOME_X;
+        public const double HOME_Y = ProjectConstants.DEFAULT_HOME_Y;
+        public const double HOME_Z = ProjectConstants.DEFAULT_HOME_Z;
         
         /// <summary>Скорость ускоренного перемещения (G0) по умолчанию, мм/мин.</summary>
-        public static double RAPID_FEED = 5000.0;
+        public static double RAPID_FEED = ProjectConstants.DEFAULT_RAPID_FEED;
 
         /// <summary>Режим позиционирования: true - абсолютный (G90), false - относительный (G91).</summary>
         public bool IsAbsolute { get; set; } = true;

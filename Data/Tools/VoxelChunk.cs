@@ -8,8 +8,8 @@ namespace CNCSS.Data.Tools
     /// </summary>
     public class VoxelChunk
     {
-        public const int Size = 32;
-        private readonly ulong[] _data = new ulong[512]; // 32*32*32 / 64 = 512 ulongs
+        public const int Size = ProjectConstants.VOXEL_CHUNK_SIZE;
+        private readonly ulong[] _data = new ulong[ProjectConstants.VOXEL_DATA_LENGTH];
 
         public bool IsDirty { get; set; } = true;
         public bool IsEmpty { get; private set; } = false;

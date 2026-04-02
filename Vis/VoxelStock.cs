@@ -91,7 +91,7 @@ namespace CNCSS.Vis
                                 if (gy > maxY || gy < minY) continue;
                                 double py = _min.Y + gy * _resolution;
 
-                                double t = len2_xy < 1e-7 ? 0 : Math.Max(0, Math.Min(1, ((px - start.X) * dir.X + (py - start.Y) * dir.Y) / (len2_xy + 1e-9)));
+                                double t = len2_xy < ProjectConstants.EPSILON ? 0 : Math.Max(0, Math.Min(1, ((px - start.X) * dir.X + (py - start.Y) * dir.Y) / (len2_xy + ProjectConstants.SMALL_EPSILON)));
                                 double dx = px - (start.X + t * dir.X);
                                 double dy = py - (start.Y + t * dir.Y);
 
