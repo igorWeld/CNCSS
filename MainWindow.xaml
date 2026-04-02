@@ -1,0 +1,330 @@
+<Window x:Class="CNCSS.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:hx="http://helix-toolkit.org/wpf"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="CNCSS — 3D траектория"
+        Height="720" Width="1100"
+        WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+    </Window.Resources>
+    <DockPanel>
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="_Файл">
+                <MenuItem Header="_Открыть G-код..." Click="OpenFile_Click" InputGestureText="Ctrl+O"/>
+                <Separator/>
+                <MenuItem Header="_Выход" Click="Exit_Click"/>
+            </MenuItem>
+            <MenuItem Header="_Вид">
+                <MenuItem Header="Подогнать камеру" Click="ZoomExtents_Click" InputGestureText="F"/>
+            </MenuItem>
+            <MenuItem Header="_Настройки">
+                <MenuItem Header="Параметры симуляции">
+                    <MenuItem.HeaderTemplate>
+                        <DataTemplate>
+                            <StackPanel Width="200" Margin="5">
+                                <TextBlock Text="Ускоренная подача (G0):" Margin="0,0,0,2"/>
+                                <TextBox x:Name="RapidFeedInputTop" Text="5000" Margin="0,0,0,10"/>
+                                
+                                <TextBlock Text="Мин. сегментов дуги:" Margin="0,0,0,2"/>
+                                <TextBox x:Name="ArcMinSegmentsInputTop" Text="8" Margin="0,0,0,10"/>
+                                
+                                <TextBlock Text="Макс. сегментов дуги:" Margin="0,0,0,2"/>
+                                <TextBox x:Name="ArcMaxSegmentsInputTop" Text="512" Margin="0,0,0,10"/>
+                                
+                                <Button Content="Применить" Click="ApplySettingsTop_Click" Padding="5"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </MenuItem.HeaderTemplate>
+                </MenuItem>
+            </MenuItem>
+        </Menu>
+
+        <StatusBar DockPanel.Dock="Bottom" Background="#FF252526" Foreground="White">
+            <StatusBarItem>
+                <TextBlock x:Name="StatusText" Text="Готов" Margin="5,0"/>
+            </StatusBarItem>
+            <Separator Background="#40FFFFFF"/>
+            <StatusBarItem HorizontalContentAlignment="Stretch">
+                <Grid Width="300">
+                    <ProgressBar x:Name="MainProgressBar" Height="14" Minimum="0" Maximum="100" Value="0" Background="#40FFFFFF" Foreground="SkyBlue" BorderThickness="0"/>
+                    <TextBlock Text="{Binding ElementName=MainProgressBar, Path=Value, StringFormat={}{0:F0}%}" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="White" FontSize="10" FontWeight="Bold"/>
+                </Grid>
+            </StatusBarItem>
+        </StatusBar>
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="300"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 3D Viewport -->
+            <hx:HelixViewport3D x:Name="Viewport"
+                                Grid.Column="0"
+                                Background="#FF1E1E1E"
+                                ZoomExtentsWhenLoaded="True"
+                                ShowCoordinateSystem="True">
+                <hx:DefaultLights/>
+            </hx:HelixViewport3D>
+
+            <!-- FPS Counter (Top Right) -->
+            <Border Grid.Column="0" 
+                    VerticalAlignment="Top" 
+                    HorizontalAlignment="Right" 
+                    Margin="10" 
+                    Padding="8,4"
+                    Background="#80000000" 
+                    CornerRadius="4"
+                    IsHitTestVisible="False">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="FPS: " Foreground="White" FontSize="12"/>
+                    <TextBlock x:Name="FpsText" Text="0" Foreground="Lime" FontSize="12" FontWeight="Bold"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Overlay Panel (Bottom Left) -->
+            <Border Grid.Column="0" 
+                    VerticalAlignment="Bottom" 
+                    HorizontalAlignment="Left" 
+                    Margin="20" 
+                    Padding="15"
+                    Background="#80000000" 
+                    CornerRadius="8"
+                    IsHitTestVisible="False">
+                <StackPanel>
+                    <TextBlock x:Name="ToolText" Text="Инструмент: -" Foreground="White" FontSize="14" Margin="0,2"/>
+                    <TextBlock x:Name="CoordSystemText" Text="СК: G54" Foreground="White" FontSize="14" Margin="0,2"/>
+                    <TextBlock x:Name="RefSystemText" Text="Отсчет: ABS" Foreground="White" FontSize="14" Margin="0,2"/>
+                    <TextBlock x:Name="PositionText" Text="X: 0.000 Y: 0.000 Z: 0.000" Foreground="White" FontSize="16" FontWeight="Bold" Margin="0,5,0,2"/>
+                    <TextBlock x:Name="FeedStatusText" Text="F: 0 мм/мин" Foreground="White" FontSize="14" Margin="0,2"/>
+                    <TextBlock x:Name="SpindleStatusText" Text="S: 0 об/мин (M5)" Foreground="White" FontSize="14" Margin="0,2"/>
+                    <TextBlock x:Name="CoolantText" Text="СОЖ: ВЫКЛ" Foreground="White" FontSize="14" Margin="0,2"/>
+                    <TextBlock x:Name="ResolutionStatusText" Text="Точность: 1.0 мм" Foreground="White" FontSize="14" Margin="0,2"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Central Progress Bar Panel -->
+            <Border Grid.Column="0" 
+                    VerticalAlignment="Center" 
+                    HorizontalAlignment="Center" 
+                    Padding="20,15"
+                    Background="#D0000000" 
+                    CornerRadius="12"
+                    x:Name="StockProgressPanel"
+                    Visibility="Collapsed"
+                    IsHitTestVisible="False">
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="Расчет воксельной модели..." Foreground="SkyBlue" FontSize="14" FontWeight="Bold" Margin="0,0,0,10" HorizontalAlignment="Center"/>
+                    <ProgressBar x:Name="StockProgressBar" Height="8" Width="300" Minimum="0" Maximum="100" IsIndeterminate="True" Foreground="SkyBlue" Background="#40FFFFFF" BorderThickness="0"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Right Panel: G-Code, Tools and Stats -->
+            <Grid Grid.Column="1" Background="#FFF5F5F5">
+                <TabControl>
+                    <TabItem Header="Программа">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <DockPanel Grid.Row="0" Margin="8">
+                                <TextBlock DockPanel.Dock="Top" FontWeight="Bold" Margin="0,0,0,8" Text="G-код программы"/>
+                                <ListBox x:Name="GCodeList" 
+                                         FontFamily="Consolas"
+                                         FontSize="13"
+                                         SelectionChanged="GCodeList_SelectionChanged"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" Margin="2,0"/>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </DockPanel>
+
+                            <DockPanel Grid.Row="1" Margin="8">
+                                <StackPanel DockPanel.Dock="Top">
+                                    <TextBlock FontWeight="Bold" Margin="0,0,0,8" Text="Управление анимацией"/>
+                                    <UniformGrid Columns="3" Margin="0,0,0,10">
+                                        <Button x:Name="PlayButton" Content="▶ Пуск" Click="PlayButton_Click" Margin="2" Padding="5"/>
+                                        <Button x:Name="PauseButton" Content="⏸ Пауза" Click="PauseButton_Click" Margin="2" Padding="5"/>
+                                        <Button x:Name="StopButton" Content="⏹ Стоп" Click="StopButton_Click" Margin="2" Padding="5"/>
+                                    </UniformGrid>
+
+                                    <TextBlock Text="Множитель скорости симуляции:" Margin="0,0,0,5"/>
+                                    <UniformGrid Columns="5" Margin="0,0,0,10">
+                                        <Button x:Name="SpeedBtn1" Content="1" Click="SpeedMultiplier_Click" Tag="2" Margin="1" FontWeight="Bold"/>
+                                        <Button Content="2" Click="SpeedMultiplier_Click" Tag="5" Margin="1"/>
+                                        <Button Content="3" Click="SpeedMultiplier_Click" Tag="9" Margin="1"/>
+                                        <Button Content="4" Click="SpeedMultiplier_Click" Tag="15" Margin="1"/>
+                                        <Button Content="5" Click="SpeedMultiplier_Click" Tag="20" Margin="1"/>
+                                    </UniformGrid>
+
+                                    <TextBlock Text="Коррекция подачи (Work):" Margin="0,0,0,2"/>
+                                    <DockPanel Margin="0,0,0,5">
+                                        <TextBlock x:Name="WorkOverrideText" Text="100%" Width="40" VerticalAlignment="Center"/>
+                                        <Slider x:Name="WorkOverrideSlider" Minimum="0" Maximum="120" Value="100" TickFrequency="10" IsSnapToTickEnabled="True" ValueChanged="OverrideSlider_ValueChanged"/>
+                                    </DockPanel>
+
+                                    <TextBlock Text="Коррекция G0 (Rapid):" Margin="0,0,0,2"/>
+                                    <DockPanel Margin="0,0,0,10">
+                                        <TextBlock x:Name="RapidOverrideText" Text="100%" Width="40" VerticalAlignment="Center"/>
+                                        <Slider x:Name="RapidOverrideSlider" Minimum="0" Maximum="120" Value="100" TickFrequency="10" IsSnapToTickEnabled="True" ValueChanged="OverrideSlider_ValueChanged"/>
+                                    </DockPanel>
+                                </StackPanel>
+
+                                <TextBlock DockPanel.Dock="Top" FontWeight="Bold" Margin="0,0,0,8" Text="Статистика"/>
+                                <TextBox x:Name="StatsBox"
+                                         IsReadOnly="True"
+                                         TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         FontFamily="Consolas"
+                                         FontSize="11"
+                                         Background="White"
+                                         Height="80"/>
+                            </DockPanel>
+                        </Grid>
+                    </TabItem>
+                    
+                    <TabItem Header="Заготовка">
+                        <StackPanel Margin="8">
+                            <TextBlock FontWeight="Bold" Margin="0,0,0,8" Text="Параметры заготовки"/>
+                            
+                            <CheckBox x:Name="StockVisibleCheck" Content="Отображать заготовку" IsChecked="True" Checked="StockVisible_Changed" Unchecked="StockVisible_Changed" Margin="0,0,0,10"/>
+
+                            <GroupBox Header="Минимум (X, Y, Z)" Margin="0,0,0,8">
+                                <Grid Margin="5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="2">
+                                        <TextBlock Text="X:"/>
+                                        <TextBox x:Name="StockMinX" Text="-50" TextChanged="StockParam_TextChanged"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Margin="2">
+                                        <TextBlock Text="Y:"/>
+                                        <TextBox x:Name="StockMinY" Text="-50" TextChanged="StockParam_TextChanged"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" Margin="2">
+                                        <TextBlock Text="Z:"/>
+                                        <TextBox x:Name="StockMinZ" Text="-20" TextChanged="StockParam_TextChanged"/>
+                                    </StackPanel>
+                                </Grid>
+                            </GroupBox>
+
+                            <GroupBox Header="Максимум (X, Y, Z)" Margin="0,0,0,8">
+                                <Grid Margin="5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="2">
+                                        <TextBlock Text="X:"/>
+                                        <TextBox x:Name="StockMaxX" Text="50" TextChanged="StockParam_TextChanged"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Margin="2">
+                                        <TextBlock Text="Y:"/>
+                                        <TextBox x:Name="StockMaxY" Text="50" TextChanged="StockParam_TextChanged"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" Margin="2">
+                                        <TextBlock Text="Z:"/>
+                                        <TextBox x:Name="StockMaxZ" Text="0" TextChanged="StockParam_TextChanged"/>
+                                    </StackPanel>
+                                </Grid>
+                            </GroupBox>
+
+                            <DockPanel Margin="0,5">
+                                <TextBlock Text="Цвет:" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <ComboBox x:Name="StockColorCombo" SelectionChanged="StockColor_SelectionChanged">
+                                    <ComboBoxItem Content="Серый" Tag="LightGray" IsSelected="True"/>
+                                    <ComboBoxItem Content="Зеленый" Tag="LightGreen"/>
+                                    <ComboBoxItem Content="Синий" Tag="LightBlue"/>
+                                    <ComboBoxItem Content="Дерево" Tag="BurlyWood"/>
+                                    <ComboBoxItem Content="Медь" Tag="Coral"/>
+                                </ComboBox>
+                            </DockPanel>
+
+                            <StackPanel Margin="0,5">
+                                <TextBlock Text="Качество верификации:" VerticalAlignment="Center" Margin="0,0,0,5"/>
+                                <UniformGrid Columns="3" Height="35">
+                                    <Button x:Name="FineResButton" Content="Высокая" Click="ResButton_Click" Tag="0.1" Margin="2"/>
+                                    <Button x:Name="MediumResButton" Content="Средняя" Click="ResButton_Click" Tag="0.3" Margin="2"/>
+                                    <Button x:Name="CoarseResButton" Content="Грубая" Click="ResButton_Click" Tag="0.6" Margin="2"/>
+                                </UniformGrid>
+                            </StackPanel>
+                            
+                            <Button Content="Применить изменения" Click="ApplyStock_Click" Margin="0,10,0,0" Padding="5" FontWeight="Bold"/>
+                            
+                            <CheckBox x:Name="AutoStockCheck" Content="Авто-подбор при загрузке" IsChecked="True" Margin="0,10,0,0"/>
+                        </StackPanel>
+                    </TabItem>
+                    <TabItem Header="Инструменты">
+                        <DockPanel Margin="8">
+                            <TextBlock DockPanel.Dock="Top" FontWeight="Bold" Margin="0,0,0,8" Text="Список инструментов в УП"/>
+                            <ListBox x:Name="ToolsList" d:ItemsSource="{d:SampleData ItemCount=5}" SelectionChanged="ToolsList_SelectionChanged">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border BorderBrush="Gray" BorderThickness="0,0,0,1" Padding="5">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding DisplayName}" FontWeight="Bold" FontSize="14"/>
+                                                <Grid Margin="0,5,0,0">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                    </Grid.RowDefinitions>
+                                                    
+                                                    <TextBlock Text="Тип:" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                                    <ComboBox Grid.Row="0" Grid.Column="1" 
+                                                              ItemsSource="{Binding ToolTypes}" 
+                                                              SelectedItem="{Binding SelectedType, Mode=TwoWay}"
+                                                              Margin="0,2"/>
+
+                                                    <TextBlock Text="D (мм):" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center"/>
+                                                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Diameter, Mode=TwoWay}" Margin="0,2"/>
+
+                                                    <TextBlock Text="Хвост. D:" Grid.Row="2" Grid.Column="0" VerticalAlignment="Center"/>
+                                                    <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding ShankDiameter, Mode=TwoWay}" Margin="0,2"/>
+
+                                                    <TextBlock Text="L реж.:" Grid.Row="3" Grid.Column="0" VerticalAlignment="Center"/>
+                                                    <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding FluteLength, Mode=TwoWay}" Margin="0,2"/>
+
+                                                    <TextBlock Text="L общая:" Grid.Row="4" Grid.Column="0" VerticalAlignment="Center"/>
+                                                    <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding OverallLength, Mode=TwoWay}" Margin="0,2"/>
+
+                                                    <TextBlock Text="Зубьев:" Grid.Row="5" Grid.Column="0" VerticalAlignment="Center"/>
+                                                    <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding Flutes, Mode=TwoWay}" Margin="0,2"/>
+
+                                                    <TextBlock Text="Угол:" Grid.Row="6" Grid.Column="0" VerticalAlignment="Center" 
+                                                               Visibility="{Binding IsDrill, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                                                    <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding PointAngle, Mode=TwoWay}" Margin="0,2"
+                                                             Visibility="{Binding IsDrill, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                                                </Grid>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </DockPanel>
+                    </TabItem>
+                </TabControl>
+            </Grid>
+        </Grid>
+    </DockPanel>
+</Window>
