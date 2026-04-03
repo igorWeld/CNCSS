@@ -3,7 +3,9 @@ using System.Windows.Media.Media3D;
 using System.Windows.Media;
 using CNCSS.Data.Tools;
 using CNCSS.Data;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace CNCSS.Vis
@@ -18,6 +20,7 @@ namespace CNCSS.Vis
         private readonly Point3D _min;
         private readonly int _sizeX, _sizeY, _sizeZ;
         private readonly int _chunkCountX, _chunkCountY, _chunkCountZ;
+        private readonly ReaderWriterLockSlim _voxelsLock = new ReaderWriterLockSlim();
 
         private readonly Dictionary<(int, int, int), GeometryModel3D> _chunkModels = new Dictionary<(int, int, int), GeometryModel3D>();
         private readonly Model3DGroup _modelGroup = new Model3DGroup();
@@ -50,6 +53,9 @@ namespace CNCSS.Vis
 
         public void CutCylinder(Point3D start, Point3D end, double radius, double fluteLength)
         {
+            _voxelsLock.EnterWriteLock();
+            try
+            {
             double r2 = radius * radius;
             Vector3D dir = end - start;
             double len2_xy = dir.X * dir.X + dir.Y * dir.Y;
@@ -128,6 +134,11 @@ namespace CNCSS.Vis
                     }
                 }
             });
+            }
+            finally
+            {
+                _voxelsLock.ExitWriteLock();
+            }
         }
 
         public async Task UpdateVisualsAsync()
@@ -137,8 +148,7 @@ namespace CNCSS.Vis
 
             try
             {
-                List<Task<(int, int, int, MeshGeometry3D?)>> tasks = new();
-                int updatedCount = 0;
+                var dirty = new List<(int cx, int cy, int cz, bool isEmpty)>();
 
                 for (int cz = 0; cz < _chunkCountZ; cz++)
                 {
@@ -149,27 +159,35 @@ namespace CNCSS.Vis
                             var chunk = _chunks[cx, cy, cz];
                             if (chunk.IsDirty)
                             {
-                                var key = (cx, cy, cz);
                                 chunk.IsDirty = false;
-
-                                if (chunk.IsEmpty)
-                                {
-                                    tasks.Add(Task.FromResult<(int, int, int, MeshGeometry3D?)>((cx, cy, cz, null)));
-                                }
-                                else
-                                {
-                                    int localCx = cx, localCy = cy, localCz = cz;
-                                    tasks.Add(Task.Run(() => (localCx, localCy, localCz, (MeshGeometry3D?)CreateChunkMesh(localCx, localCy, localCz))));
-                                }
+                                dirty.Add((cx, cy, cz, chunk.IsEmpty));
                             }
                         }
                     }
                 }
 
-                if (tasks.Count > 0)
+                if (dirty.Count > 0)
                 {
-                    var results = await Task.WhenAll(tasks);
-                    
+                    var results = new ConcurrentBag<(int cx, int cy, int cz, MeshGeometry3D? mesh)>();
+
+                    await Task.Run(() =>
+                    {
+                        Parallel.ForEach(
+                            dirty,
+                            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) },
+                            item =>
+                            {
+                                if (item.isEmpty)
+                                {
+                                    results.Add((item.cx, item.cy, item.cz, null));
+                                    return;
+                                }
+
+                                var mesh = CreateChunkMesh(item.cx, item.cy, item.cz);
+                                results.Add((item.cx, item.cy, item.cz, mesh));
+                            });
+                    });
+
                     // Оптимизация: Накапливаем изменения для пакетного обновления UI
                     var toRemove = new List<GeometryModel3D>();
                     var toAdd = new List<GeometryModel3D>();
@@ -187,7 +205,6 @@ namespace CNCSS.Vis
                         }
                         else
                         {
-                            mesh.Freeze(); 
                             if (_chunkModels.TryGetValue(key, out var existingModel))
                             {
                                 existingModel.Geometry = mesh;
@@ -220,6 +237,9 @@ namespace CNCSS.Vis
 
         private MeshGeometry3D CreateChunkMesh(int cx, int cy, int cz)
         {
+            _voxelsLock.EnterReadLock();
+            try
+            {
             var mesh = new MeshGeometry3D();
             var positions = new Point3DCollection();
             var indices = new Int32Collection();
@@ -306,6 +326,11 @@ namespace CNCSS.Vis
             mesh.TriangleIndices = indices;
             mesh.Freeze();
             return mesh;
+            }
+            finally
+            {
+                _voxelsLock.ExitReadLock();
+            }
         }
 
         private void AddGreedyFace(Point3DCollection pos, Int32Collection idx, int axis, bool positive, int i, int u, int v, int w, int h)

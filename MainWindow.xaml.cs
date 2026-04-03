@@ -37,6 +37,7 @@ namespace CNCSS
         private bool _isStockUpdating = false;
 
         private VoxelStock? _stock;
+        private StockCutWorker? _stockCutWorker;
         private readonly ModelVisual3D _stockVisual = new();
         private readonly GeometryModel3D _stockModel = new();
 
@@ -395,29 +396,7 @@ namespace CNCSS
                     var diam = tool.Diameter;
                     var flute = tool.FluteLength;
 
-                    // Разбиваем длинные перемещения на мелкие шаги для точности вокселей
-                    double stepDist = diam / 2.0;
-                    if (stepDist < 0.1) stepDist = 0.1;
-                    
-                    Vector3D fullMove = pEnd - pStart;
-                    double fullLen = fullMove.Length;
-                    
-                    if (fullLen > stepDist)
-                    {
-                        int subSteps = (int)Math.Ceiling(fullLen / stepDist);
-                        Task.Run(() => {
-                            for (int i = 1; i <= subSteps; i++)
-                            {
-                                Point3D subStart = pStart + fullMove * ((i - 1) / (double)subSteps);
-                                Point3D subEnd = pStart + fullMove * (i / (double)subSteps);
-                                _stock.CutCylinder(subStart, subEnd, diam / 2.0, flute);
-                            }
-                        });
-                    }
-                    else
-                    {
-                        Task.Run(() => _stock.CutCylinder(pStart, pEnd, diam / 2.0, flute));
-                    }
+                    _stockCutWorker?.EnqueueCut(pStart, pEnd, diam / 2.0, flute);
 
                     // Увеличиваем порог обновления до 250мс для снижения нагрузки на UI
                     if (_stock.IsDirty && !_isStockUpdating && (DateTime.Now - _lastStockUpdateTime).TotalMilliseconds > 250)
@@ -672,6 +651,8 @@ M30";
                 double minZ = double.Parse(StockMinZ.Text);
                 double maxZ = double.Parse(StockMaxZ.Text);
                 _stock = new VoxelStock(maxX - minX, maxY - minY, maxZ - minZ, _selectedResolution, new Point3D((minX + maxX) / 2, (minY + maxY) / 2, 0), maxZ);
+                _stockCutWorker?.Dispose();
+                _stockCutWorker = new StockCutWorker(_stock);
                 await UpdateStockMeshAsync(true);
             }
             catch { }
@@ -783,6 +764,12 @@ M30";
             if (e.Key == Key.O && Keyboard.Modifiers == ModifierKeys.Control) OpenFile_Click(this, e);
             else if (e.Key == Key.F) Viewport.ZoomExtents();
             base.OnKeyDown(e);
+        }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            _stockCutWorker?.Dispose();
+            base.OnClosed(e);
         }
     }
 }

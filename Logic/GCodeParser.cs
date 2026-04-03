@@ -3,7 +3,6 @@ using System.IO;
 using System.Text.RegularExpressions;
 using CNCSS.Data;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 
 namespace CNCSS.Logic
 {
@@ -14,12 +13,6 @@ namespace CNCSS.Logic
     /// </summary>
     public class GCodeParser : IGCodeParser
     {
-        [DllImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        static extern bool AllocConsole();
-
-        private static bool _consoleAllocated = false;
-
         /// <summary>Текущее состояние станка в процессе парсинга.</summary>
         public MachineState State { get; }
         /// <summary>Список всех разобранных команд из файла.</summary>
@@ -29,25 +22,12 @@ namespace CNCSS.Logic
         public GCodeParser()
         {
             State = new MachineState();
-            EnsureConsole();
         }
 
         /// <summary>Инициализирует парсер с заданным начальным состоянием.</summary>
         public GCodeParser(MachineState state)
         {
             State = state ?? new MachineState();
-            EnsureConsole();
-        }
-
-        /// <summary>Выделяет консоль для отладочного вывода, если она еще не выделена.</summary>
-        private void EnsureConsole()
-        {
-            if (!_consoleAllocated)
-            {
-                AllocConsole();
-                _consoleAllocated = true;
-                System.Console.WriteLine("=== CNCSS G-Code Parser Console ===");
-            }
         }
 
         /// <summary>
@@ -63,13 +43,13 @@ namespace CNCSS.Logic
             if (!File.Exists(filePath))
                 throw new FileNotFoundException($"Файл не найден: {filePath}");
 
-            System.Console.WriteLine($"Загрузка файла: {filePath}");
+            Debug.WriteLine($"[CNCSS] Загрузка файла: {filePath}");
             var lines = File.ReadAllLines(filePath);
 
             for (int i = 0; i < lines.Length; i++)
                 ProcessLine(lines[i], i + 1);
 
-            System.Console.WriteLine($"Загрузка завершена. Команд: {Commands.Count}");
+            Debug.WriteLine($"[CNCSS] Загрузка завершена. Команд: {Commands.Count}");
             return State;
         }
 
@@ -89,7 +69,13 @@ namespace CNCSS.Logic
             if (string.IsNullOrWhiteSpace(line))
             {
                 if (!string.IsNullOrEmpty(comment))
-                    Commands.Add(new ParsedCommand { LineNumber = lineNumber, Comment = comment });
+                    Commands.Add(new ParsedCommand
+                    {
+                        LineNumber = lineNumber,
+                        Comment = comment,
+                        StartState = State.Clone(),
+                        EndState = State.Clone()
+                    });
                 return;
             }
 

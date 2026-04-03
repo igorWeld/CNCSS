@@ -1,15 +1,15 @@
-using System.Collections;
-
 namespace CNCSS.Data.Tools
 {
     /// <summary>
-    /// Чанк вокселей размером 16x16x16.
+    /// Чанк вокселей размером 32x32x32.
     /// Использует битовую маску для хранения состояния (1 - есть материал, 0 - вырезано).
     /// </summary>
     public class VoxelChunk
     {
         public const int Size = ProjectConstants.VOXEL_CHUNK_SIZE;
+        private const int VoxelCount = Size * Size * Size;
         private readonly ulong[] _data = new ulong[ProjectConstants.VOXEL_DATA_LENGTH];
+        private int _filledVoxelCount;
 
         public bool IsDirty { get; set; } = true;
         public bool IsEmpty { get; private set; } = false;
@@ -20,11 +20,14 @@ namespace CNCSS.Data.Tools
             if (fill)
             {
                 for (int i = 0; i < _data.Length; i++) _data[i] = ulong.MaxValue;
+                _filledVoxelCount = VoxelCount;
                 IsFull = true;
                 IsEmpty = false;
             }
             else
             {
+                for (int i = 0; i < _data.Length; i++) _data[i] = 0;
+                _filledVoxelCount = 0;
                 IsFull = false;
                 IsEmpty = true;
             }
@@ -32,35 +35,34 @@ namespace CNCSS.Data.Tools
 
         public bool GetVoxel(int x, int y, int z)
         {
-            // 32x32x32: x << 10 | y << 5 | z
-            int index = (x << 10) | (y << 5) | z;
+            int index = (x * Size + y) * Size + z;
             return (_data[index >> 6] & (1UL << (index & 63))) != 0;
         }
 
         public void SetVoxel(int x, int y, int z, bool value)
         {
-            int index = (x << 10) | (y << 5) | z;
+            int index = (x * Size + y) * Size + z;
             int ulongIdx = index >> 6;
             ulong bit = 1UL << (index & 63);
 
-            if (value) _data[ulongIdx] |= bit;
-            else _data[ulongIdx] &= ~bit;
-            
-            IsDirty = true;
-            UpdateFlags();
-        }
+            bool wasSet = (_data[ulongIdx] & bit) != 0;
+            if (wasSet == value)
+                return;
 
-        private void UpdateFlags()
-        {
-            bool any = false;
-            bool all = true;
-            for (int i = 0; i < _data.Length; i++)
+            if (value)
             {
-                if (_data[i] != 0) any = true;
-                if (_data[i] != ulong.MaxValue) all = false;
+                _data[ulongIdx] |= bit;
+                _filledVoxelCount++;
             }
-            IsEmpty = !any;
-            IsFull = all;
+            else
+            {
+                _data[ulongIdx] &= ~bit;
+                _filledVoxelCount--;
+            }
+
+            IsDirty = true;
+            IsEmpty = _filledVoxelCount <= 0;
+            IsFull = _filledVoxelCount >= VoxelCount;
         }
 
         public ulong[] GetData() => _data;
