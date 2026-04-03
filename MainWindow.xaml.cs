@@ -54,6 +54,7 @@ namespace CNCSS
         // FPS Counter fields
         private int _frameCount = 0;
         private DateTime _lastFpsUpdate = DateTime.Now;
+        private double _fpsSlowdownFactor = 1.0; // Коэффициент замедления при низком FPS
 
         public MainWindow()
         {
@@ -80,18 +81,29 @@ namespace CNCSS
             _frameCount++;
             var now = DateTime.Now;
             var elapsed = (now - _lastFpsUpdate).TotalSeconds;
-            if (elapsed >= 1.0)
+            if (elapsed >= 0.5) // Обновляем чаще (раз в полсекунды) для более плавной реакции
             {
+                double fps = _frameCount / elapsed;
                 if (FpsText != null)
                 {
-                    double fps = _frameCount / elapsed;
                     FpsText.Text = fps.ToString("F0");
-                    
-                    // Цвет в зависимости от производительности
                     if (fps < 15) FpsText.Foreground = Brushes.Red;
                     else if (fps < 30) FpsText.Foreground = Brushes.Orange;
                     else FpsText.Foreground = Brushes.Lime;
                 }
+
+                // Динамическое замедление: если FPS < 45, замедляем симуляцию
+                const double targetFps = 45.0;
+                if (fps < targetFps)
+                {
+                    // Плавное снижение коэффициента (минимум 0.1)
+                    _fpsSlowdownFactor = Math.Max(0.1, fps / targetFps);
+                }
+                else
+                {
+                    _fpsSlowdownFactor = 1.0;
+                }
+
                 _frameCount = 0;
                 _lastFpsUpdate = now;
             }
@@ -306,8 +318,8 @@ namespace CNCSS
                     
                     if (speedMmPerSec <= 0) speedMmPerSec = 0.001;
 
-                    // Применяем множитель скорости симуляции
-                    double step = (speedMmPerSec * 0.01 * _simulationMultiplier) / dist;
+                    // Применяем множитель скорости симуляции и коэффициент замедления при низком FPS
+                    double step = (speedMmPerSec * 0.01 * _simulationMultiplier * _fpsSlowdownFactor) / dist;
                     _interpolationProgress = Math.Min(1.0, _interpolationProgress + step);
                 }
                 else { _interpolationProgress = 1.0; }
@@ -407,10 +419,10 @@ namespace CNCSS
                         Task.Run(() => _stock.CutCylinder(pStart, pEnd, diam / 2.0, flute));
                     }
 
-                    // Уменьшаем порог обновления до 100мс для лучшей отзывчивости прогресс-бара
-                    if (_stock.IsDirty && !_isStockUpdating && (DateTime.Now - _lastStockUpdateTime).TotalMilliseconds > 100)
+                    // Увеличиваем порог обновления до 250мс для снижения нагрузки на UI
+                    if (_stock.IsDirty && !_isStockUpdating && (DateTime.Now - _lastStockUpdateTime).TotalMilliseconds > 250)
                     {
-                        await UpdateStockMeshAsync();
+                        _ = UpdateStockMeshAsync();
                     }
                 }
             }
@@ -424,15 +436,16 @@ namespace CNCSS
             
             try
             {
-                // Показываем прогресс-бар только если это тяжелый расчет (смена точности)
                 if (showProgress && StockProgressPanel != null)
                 {
                     StockProgressPanel.Visibility = Visibility.Visible;
                     await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Render);
                 }
                 
+                // Выполняем тяжелый расчет геометрии в фоне
                 await _stock.UpdateVisualsAsync();
                 
+                // Обновляем визуальный контент в UI-потоке
                 if (_stockVisual.Content != _stock.MainModel)
                 {
                     _stockVisual.Content = _stock.MainModel;

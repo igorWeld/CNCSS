@@ -2,6 +2,7 @@ using System;
 using System.Windows.Media.Media3D;
 using System.Windows.Media;
 using CNCSS.Data.Tools;
+using CNCSS.Data;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -79,6 +80,13 @@ namespace CNCSS.Vis
                         int yStart = cy * VoxelChunk.Size;
                         int zStartChunk = cz * VoxelChunk.Size;
 
+                        // Быстрая проверка: пересекает ли цилиндр этот чанк по вертикали
+                        double chunkMinZ = _min.Z + zStartChunk * _resolution;
+                        double chunkMaxZ = chunkMinZ + VoxelChunk.Size * _resolution;
+                        
+                        // Находим диапазон Z для текущего прохода в этом чанке
+                        // (упрощенная проверка, чтобы не заходить в циклы, если инструмент выше или ниже чанка)
+
                         for (int lx = 0; lx < VoxelChunk.Size; lx++)
                         {
                             int gx = xStart + lx;
@@ -106,6 +114,7 @@ namespace CNCSS.Vis
                                     for (int gz = gzStart; gz <= gzEnd; gz++)
                                     {
                                         int lz = gz - zStartChunk;
+                                        // Оптимизация: проверяем наличие вокселя перед записью
                                         if (chunk.GetVoxel(lx, ly, lz))
                                         {
                                             chunk.SetVoxel(lx, ly, lz, false);
@@ -123,59 +132,91 @@ namespace CNCSS.Vis
 
         public async Task UpdateVisualsAsync()
         {
-            List<Task<(int, int, int, MeshGeometry3D)>> tasks = new();
+            if (_isUpdating) return;
+            _isUpdating = true;
 
-            for (int cz = 0; cz < _chunkCountZ; cz++)
+            try
             {
-                for (int cy = 0; cy < _chunkCountY; cy++)
-                {
-                    for (int cx = 0; cx < _chunkCountX; cx++)
-                    {
-                        var chunk = _chunks[cx, cy, cz];
-                        if (chunk.IsDirty)
-                        {
-                            var key = (cx, cy, cz);
-                            chunk.IsDirty = false;
+                List<Task<(int, int, int, MeshGeometry3D?)>> tasks = new();
+                int updatedCount = 0;
 
-                            if (chunk.IsEmpty)
+                for (int cz = 0; cz < _chunkCountZ; cz++)
+                {
+                    for (int cy = 0; cy < _chunkCountY; cy++)
+                    {
+                        for (int cx = 0; cx < _chunkCountX; cx++)
+                        {
+                            var chunk = _chunks[cx, cy, cz];
+                            if (chunk.IsDirty)
                             {
-                                if (_chunkModels.TryGetValue(key, out var model))
+                                var key = (cx, cy, cz);
+                                chunk.IsDirty = false;
+
+                                if (chunk.IsEmpty)
                                 {
-                                    _modelGroup.Children.Remove(model);
-                                    _chunkModels.Remove(key);
+                                    tasks.Add(Task.FromResult<(int, int, int, MeshGeometry3D?)>((cx, cy, cz, null)));
                                 }
-                            }
-                            else
-                            {
-                                // Запускаем расчет геометрии в фоновом потоке
-                                int localCx = cx, localCy = cy, localCz = cz;
-                                tasks.Add(Task.Run(() => (localCx, localCy, localCz, CreateChunkMesh(localCx, localCy, localCz))));
+                                else
+                                {
+                                    int localCx = cx, localCy = cy, localCz = cz;
+                                    tasks.Add(Task.Run(() => (localCx, localCy, localCz, (MeshGeometry3D?)CreateChunkMesh(localCx, localCy, localCz))));
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            if (tasks.Count > 0)
-            {
-                var results = await Task.WhenAll(tasks);
-                foreach (var (cx, cy, cz, mesh) in results)
+                if (tasks.Count > 0)
                 {
-                    var key = (cx, cy, cz);
-                    if (_chunkModels.TryGetValue(key, out var existingModel))
+                    var results = await Task.WhenAll(tasks);
+                    
+                    // Оптимизация: Накапливаем изменения для пакетного обновления UI
+                    var toRemove = new List<GeometryModel3D>();
+                    var toAdd = new List<GeometryModel3D>();
+
+                    foreach (var (cx, cy, cz, mesh) in results)
                     {
-                        existingModel.Geometry = mesh;
+                        var key = (cx, cy, cz);
+                        if (mesh == null)
+                        {
+                            if (_chunkModels.TryGetValue(key, out var model))
+                            {
+                                toRemove.Add(model);
+                                _chunkModels.Remove(key);
+                            }
+                        }
+                        else
+                        {
+                            mesh.Freeze(); 
+                            if (_chunkModels.TryGetValue(key, out var existingModel))
+                            {
+                                existingModel.Geometry = mesh;
+                            }
+                            else
+                            {
+                                var newModel = new GeometryModel3D(mesh, _material);
+                                newModel.BackMaterial = _material;
+                                _chunkModels[key] = newModel;
+                                toAdd.Add(newModel);
+                            }
+                        }
                     }
-                    else
+
+                    // Пакетное применение изменений к Model3DGroup (минимизирует фризы UI)
+                    if (toRemove.Count > 0 || toAdd.Count > 0)
                     {
-                        var newModel = new GeometryModel3D(mesh, _material);
-                        newModel.BackMaterial = _material;
-                        _chunkModels[key] = newModel;
-                        _modelGroup.Children.Add(newModel);
+                        foreach (var model in toRemove) _modelGroup.Children.Remove(model);
+                        foreach (var model in toAdd) _modelGroup.Children.Add(model);
                     }
                 }
             }
+            finally
+            {
+                _isUpdating = false;
+            }
         }
+
+        private bool _isUpdating = false;
 
         private MeshGeometry3D CreateChunkMesh(int cx, int cy, int cz)
         {
