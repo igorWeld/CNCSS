@@ -12,9 +12,4 @@
   <ItemGroup>
     <PackageReference Include="HelixToolkit.Wpf" Version="2.25.0" />
   </ItemGroup>
-
-  <ItemGroup>
-    <Compile Remove="**\*.g.i.cs" />
-    <Compile Remove="obj\Release\**\*.cs" Condition="'$(Configuration)' == 'Debug'" />
-  </ItemGroup>
 </Project>
