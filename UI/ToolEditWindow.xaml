@@ -1,0 +1,95 @@
+<Window x:Class="CNCSS.UI.ToolEditWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Параметры инструмента" Height="450" Width="300"
+        WindowStartupLocation="CenterScreen"
+        Background="#FF2D2D30" Foreground="White"
+        ResizeMode="NoResize" ShowInTaskbar="False" WindowStyle="ToolWindow">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Text="РЕДАКТИРОВАНИЕ ИНСТРУМЕНТА" Foreground="SkyBlue" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,20"/>
+
+        <StackPanel Grid.Row="1">
+            <Grid Margin="0,0,0,5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Номер (T):" VerticalAlignment="Center"/>
+                <TextBox x:Name="NumberInput" Grid.Column="1" Background="#3F3F46" Foreground="White" BorderThickness="1" Padding="2"/>
+            </Grid>
+
+            <Grid Margin="0,0,0,5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Тип:" VerticalAlignment="Center"/>
+                <ComboBox x:Name="TypeCombo" Grid.Column="1" Background="#3F3F46" Foreground="White" BorderThickness="1"/>
+            </Grid>
+
+            <Grid Margin="0,0,0,5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Диаметр (D):" VerticalAlignment="Center"/>
+                <TextBox x:Name="DiameterInput" Grid.Column="1" Background="#3F3F46" Foreground="White" BorderThickness="1" Padding="2"/>
+            </Grid>
+
+            <Grid Margin="0,0,0,5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Длина реж. части (L):" VerticalAlignment="Center"/>
+                <TextBox x:Name="FluteLengthInput" Grid.Column="1" Background="#3F3F46" Foreground="White" BorderThickness="1" Padding="2"/>
+            </Grid>
+
+            <Grid Margin="0,0,0,5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Диаметр хвостовика:" VerticalAlignment="Center"/>
+                <TextBox x:Name="ShankDiameterInput" Grid.Column="1" Background="#3F3F46" Foreground="White" BorderThickness="1" Padding="2"/>
+            </Grid>
+            
+            <Grid Margin="0,0,0,5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Общая длина:" VerticalAlignment="Center"/>
+                <TextBox x:Name="TotalLengthInput" Grid.Column="1" Background="#3F3F46" Foreground="White" BorderThickness="1" Padding="2"/>
+            </Grid>
+
+            <Grid Margin="0,0,0,5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Кол-во зубьев:" VerticalAlignment="Center"/>
+                <TextBox x:Name="FlutesInput" Grid.Column="1" Background="#3F3F46" Foreground="White" BorderThickness="1" Padding="2"/>
+            </Grid>
+
+            <Grid Margin="0,0,0,5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Угол при вершине:" VerticalAlignment="Center"/>
+                <TextBox x:Name="PointAngleInput" Grid.Column="1" Background="#3F3F46" Foreground="White" BorderThickness="1" Padding="2"/>
+            </Grid>
+        </StackPanel>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Сохранить" Click="Save_Click" Width="80" Margin="0,0,10,0" Background="#FF3E3E42" Foreground="White" Padding="5"/>
+            <Button Content="Отмена" Click="Cancel_Click" Width="80" Background="#FF3E3E42" Foreground="White" Padding="5"/>
+        </StackPanel>
+    </Grid>
+</Window>
