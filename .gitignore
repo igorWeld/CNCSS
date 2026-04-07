@@ -1,42 +1,63 @@
-```gitignore
-# Test assemblies and build outputs
-*.dll
+# Compiled and build artifacts
+*.o
+*.obj
 *.exe
-*.pdb
-bin/
-obj/
-out/
+*.dll
+*.so
+*.a
+*.out
 
 # Dependencies
-packages/
 node_modules/
-.nuget/
-.npm/
+venv/
+.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+target/
+.gradle/
 
-# IDE files
-.vs/
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Editors
 .vscode/
 .idea/
-*.userprefs
-*.suo
-*.user
 
-# Logs
-*.log
-
-# Temporary files
-*.tmp
-*~
+# System files
 .DS_Store
 Thumbs.db
+.env
+.env.local
+*.env.*
 
-# Configuration
-*.user
-*.local.settings.json
-
-# Coverage and test results
-TestResults/
+# Coverage
 coverage/
-*.coverage
-*.trx
-```
+htmlcov/
+.coverage
+
+# Compressed files
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
