@@ -21,6 +21,8 @@ namespace CNCSS.Vis
         private readonly int _sizeX, _sizeY, _sizeZ;
         private readonly int _chunkCountX, _chunkCountY, _chunkCountZ;
         private readonly ReaderWriterLockSlim _voxelsLock = new ReaderWriterLockSlim();
+        private readonly object _updateLock = new object();
+        private bool _isUpdating = false;
 
         private readonly Dictionary<(int, int, int), GeometryModel3D> _chunkModels = new Dictionary<(int, int, int), GeometryModel3D>();
         private readonly Model3DGroup _modelGroup = new Model3DGroup();
@@ -143,27 +145,40 @@ namespace CNCSS.Vis
 
         public async Task UpdateVisualsAsync()
         {
-            if (_isUpdating) return;
-            _isUpdating = true;
+            // Используем lock для проверки флага обновления
+            lock (_updateLock)
+            {
+                if (_isUpdating) return;
+                _isUpdating = true;
+            }
 
             try
             {
                 var dirty = new List<(int cx, int cy, int cz, bool isEmpty)>();
 
-                for (int cz = 0; cz < _chunkCountZ; cz++)
+                // Собираем список грязных чанков с защитой от чтения
+                _voxelsLock.EnterReadLock();
+                try
                 {
-                    for (int cy = 0; cy < _chunkCountY; cy++)
+                    for (int cz = 0; cz < _chunkCountZ; cz++)
                     {
-                        for (int cx = 0; cx < _chunkCountX; cx++)
+                        for (int cy = 0; cy < _chunkCountY; cy++)
                         {
-                            var chunk = _chunks[cx, cy, cz];
-                            if (chunk.IsDirty)
+                            for (int cx = 0; cx < _chunkCountX; cx++)
                             {
-                                chunk.IsDirty = false;
-                                dirty.Add((cx, cy, cz, chunk.IsEmpty));
+                                var chunk = _chunks[cx, cy, cz];
+                                if (chunk != null && chunk.IsDirty)
+                                {
+                                    chunk.IsDirty = false;
+                                    dirty.Add((cx, cy, cz, chunk.IsEmpty));
+                                }
                             }
                         }
                     }
+                }
+                finally
+                {
+                    _voxelsLock.ExitReadLock();
                 }
 
                 if (dirty.Count > 0)
@@ -183,6 +198,7 @@ namespace CNCSS.Vis
                                     return;
                                 }
 
+                                // Создаем меш без блокировки, т.к. данные чанка уже не меняются (IsDirty сброшен)
                                 var mesh = CreateChunkMesh(item.cx, item.cy, item.cz);
                                 results.Add((item.cx, item.cy, item.cz, mesh));
                             });
@@ -229,11 +245,12 @@ namespace CNCSS.Vis
             }
             finally
             {
-                _isUpdating = false;
+                lock (_updateLock)
+                {
+                    _isUpdating = false;
+                }
             }
         }
-
-        private bool _isUpdating = false;
 
         private MeshGeometry3D CreateChunkMesh(int cx, int cy, int cz)
         {
