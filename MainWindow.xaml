@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:hx="http://helix-toolkit.org/wpf"
         xmlns:fanuc="clr-namespace:CNCSS.UI.FanucPanel"
+        xmlns:ops="clr-namespace:CNCSS.UI.OperatorStation"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
@@ -42,6 +43,8 @@
             <MenuItem Header="_Окна">
                 <MenuItem x:Name="MenuFanucWindowItem" Header="Стойка FANUC" IsCheckable="True" IsChecked="True"
                           Checked="MenuFanucWindowItem_Checked" Unchecked="MenuFanucWindowItem_Unchecked"/>
+                <MenuItem x:Name="MenuOperatorPanelItem" Header="Панель оператора" IsCheckable="True" IsChecked="True"
+                          Checked="MenuOperatorPanelItem_Checked" Unchecked="MenuOperatorPanelItem_Unchecked"/>
             </MenuItem>
             <MenuItem Header="_Вид">
                 <MenuItem Header="Подогнать камеру" Click="ZoomExtents_Click" InputGestureText="F"/>
@@ -96,13 +99,13 @@
                 <hx:DefaultLights/>
             </hx:HelixViewport3D>
 
-            <!-- FANUC floating panel inside MainWindow -->
+            <!-- Floating panels over 3D (FANUC last = on top). -->
             <Canvas Grid.Column="0" Panel.ZIndex="50" IsHitTestVisible="True">
-                <Border x:Name="FanucFloatingHost"
-                        Canvas.Left="24"
-                        Canvas.Top="24"
-                        Width="980"
-                        Height="540"
+                <Border x:Name="OperatorFloatingHost"
+                        Canvas.Left="28"
+                        Canvas.Top="260"
+                        MinWidth="432"
+                        MinHeight="356"
                         Background="#DD1F1F1F"
                         BorderBrush="#FF6A6A6A"
                         BorderThickness="1"
@@ -110,11 +113,91 @@
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="34"/>
-                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="*" MinHeight="0"/>
+                        </Grid.RowDefinitions>
+                        <Border x:Name="OperatorFloatingHeader"
+                                Grid.Row="0"
+                                Height="34"
+                                Background="#FF383C42"
+                                CornerRadius="6,6,0,0"
+                                MouseLeftButtonDown="OperatorFloatingHeader_MouseLeftButtonDown"
+                                MouseMove="OperatorFloatingHeader_MouseMove"
+                                MouseLeftButtonUp="OperatorFloatingHeader_MouseLeftButtonUp">
+                            <DockPanel LastChildFill="False" Margin="8,0">
+                                <TextBlock Text="Управление станком"
+                                           DockPanel.Dock="Left"
+                                           Foreground="White"
+                                           VerticalAlignment="Center"
+                                           FontWeight="SemiBold"
+                                           FontSize="12"/>
+                                <Button x:Name="OperatorMinimizeButton"
+                                        DockPanel.Dock="Right"
+                                        Width="24"
+                                        Height="22"
+                                        Margin="4,0,0,0"
+                                        Content="_"
+                                        Click="OperatorMinimizeButton_Click"
+                                        ToolTip="Свернуть / развернуть"/>
+                                <Button x:Name="OperatorResetSizeButton"
+                                        DockPanel.Dock="Right"
+                                        Width="24"
+                                        Height="22"
+                                        Margin="0,0,0,0"
+                                        Content="&#x21BA;"
+                                        FontSize="14"
+                                        Padding="0"
+                                        Click="OperatorResetSizeButton_Click"
+                                        ToolTip="Размер по умолчанию"/>
+                            </DockPanel>
+                        </Border>
+                        <Border x:Name="OperatorFloatingContent" Grid.Row="1" Background="#FF0F0F0F" HorizontalAlignment="Stretch" ClipToBounds="True">
+                            <ScrollViewer x:Name="OperatorContentScroll"
+                                          HorizontalScrollBarVisibility="Auto"
+                                          VerticalScrollBarVisibility="Auto"
+                                          Padding="0"
+                                          Background="#FF0F0F0F">
+                                <ops:OperatorStationPanel x:Name="OperatorPanel" Margin="4" HorizontalAlignment="Stretch"/>
+                            </ScrollViewer>
+                        </Border>
+                        <!-- Поверх всего окна, чтобы захват всегда в углу хоста, а не строки контента -->
+                        <Thumb x:Name="OperatorResizeThumb"
+                               Grid.Row="0"
+                               Grid.RowSpan="2"
+                               Width="20"
+                               Height="20"
+                               Margin="0,0,1,1"
+                               HorizontalAlignment="Right"
+                               VerticalAlignment="Bottom"
+                               Panel.ZIndex="10"
+                               Cursor="SizeNWSE"
+                               DragDelta="OperatorResizeThumb_DragDelta"
+                               ToolTip="Изменить размер">
+                            <Thumb.Template>
+                                <ControlTemplate TargetType="Thumb">
+                                    <Border Background="#66FFD700" BorderBrush="#CCFFFFFF" BorderThickness="1" CornerRadius="2"/>
+                                </ControlTemplate>
+                            </Thumb.Template>
+                        </Thumb>
+                    </Grid>
+                </Border>
+                <Border x:Name="FanucFloatingHost"
+                        Canvas.Left="24"
+                        Canvas.Top="24"
+                        MinWidth="640"
+                        MinHeight="440"
+                        Background="#DD1F1F1F"
+                        BorderBrush="#FF6A6A6A"
+                        BorderThickness="1"
+                        CornerRadius="6">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="34"/>
+                            <RowDefinition Height="*" MinHeight="0"/>
                         </Grid.RowDefinitions>
 
                         <Border x:Name="FanucFloatingHeader"
                                 Grid.Row="0"
+                                Height="34"
                                 Background="#FF2D2D30"
                                 CornerRadius="6,6,0,0"
                                 MouseLeftButtonDown="FanucFloatingHeader_MouseLeftButtonDown"
@@ -122,6 +205,7 @@
                                 MouseLeftButtonUp="FanucFloatingHeader_MouseLeftButtonUp">
                             <DockPanel LastChildFill="False" Margin="8,0">
                                 <TextBlock Text="FANUC 0i-MF Plus"
+                                           DockPanel.Dock="Left"
                                            Foreground="White"
                                            VerticalAlignment="Center"
                                            FontWeight="SemiBold"
@@ -130,15 +214,51 @@
                                         DockPanel.Dock="Right"
                                         Width="24"
                                         Height="22"
-                                        Margin="6,0,0,0"
+                                        Margin="4,0,0,0"
                                         Content="_"
-                                        Click="FanucMinimizeButton_Click"/>
+                                        Click="FanucMinimizeButton_Click"
+                                        ToolTip="Свернуть / развернуть"/>
+                                <Button x:Name="FanucResetSizeButton"
+                                        DockPanel.Dock="Right"
+                                        Width="24"
+                                        Height="22"
+                                        Margin="0,0,0,0"
+                                        Content="&#x21BA;"
+                                        FontSize="14"
+                                        Padding="0"
+                                        Click="FanucResetSizeButton_Click"
+                                        ToolTip="Размер по умолчанию"/>
                             </DockPanel>
                         </Border>
 
-                        <Border x:Name="FanucFloatingContent" Grid.Row="1" Background="#FF0F0F0F">
-                            <fanuc:FanucPanelControl x:Name="FanucPanel" Margin="6" Loaded="FanucPanel_Loaded"/>
+                        <Border x:Name="FanucFloatingContent" Grid.Row="1" Background="#FF0F0F0F" ClipToBounds="True" HorizontalAlignment="Stretch">
+                            <ScrollViewer x:Name="FanucContentScroll"
+                                          HorizontalScrollBarVisibility="Auto"
+                                          VerticalScrollBarVisibility="Auto"
+                                          Padding="0"
+                                          Background="#FF0F0F0F">
+                                <fanuc:FanucPanelControl x:Name="FanucPanel" Margin="6" HorizontalAlignment="Stretch" Loaded="FanucPanel_Loaded"/>
+                            </ScrollViewer>
                         </Border>
+
+                        <Thumb x:Name="FanucResizeThumb"
+                               Grid.Row="0"
+                               Grid.RowSpan="2"
+                               Width="20"
+                               Height="20"
+                               Margin="0,0,1,1"
+                               HorizontalAlignment="Right"
+                               VerticalAlignment="Bottom"
+                               Panel.ZIndex="10"
+                               Cursor="SizeNWSE"
+                               DragDelta="FanucResizeThumb_DragDelta"
+                               ToolTip="Изменить размер">
+                            <Thumb.Template>
+                                <ControlTemplate TargetType="Thumb">
+                                    <Border Background="#66FFD700" BorderBrush="#CCFFFFFF" BorderThickness="1" CornerRadius="2"/>
+                                </ControlTemplate>
+                            </Thumb.Template>
+                        </Thumb>
                     </Grid>
                 </Border>
             </Canvas>

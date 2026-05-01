@@ -11,6 +11,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
+using System.Windows.Threading;
 using HelixToolkit.Wpf;
 using Microsoft.Win32;
 using System.Windows.Controls.Primitives;
@@ -103,6 +104,19 @@ namespace CNCSS
         private double _fanucStartLeft;
         private double _fanucStartTop;
         private bool _isFanucMinimized;
+        private double _fanucExpandedHeight = double.NaN;
+        private const double FanucPanelResizeMinWidth = 640;
+        private const double FanucPanelResizeMinHeight = 440;
+        private bool _isOperatorDragging;
+        private Point _operatorDragStart;
+        private double _operatorStartLeft;
+        private double _operatorStartTop;
+        private bool _isOperatorMinimized;
+        private bool _suppressOperatorFeedOverrideSync;
+        private double _operatorSpindleOverridePercent = 100.0;
+        private double _operatorExpandedHeight = double.NaN;
+        private const double OperatorPanelResizeMinWidth = 432;
+        private const double OperatorPanelResizeMinHeight = 356;
         private readonly System.Windows.Threading.DispatcherTimer _fanucClockTimer = new();
         private readonly Stopwatch _runTimeStopwatch = new();
         private readonly Stopwatch _cycleTimeStopwatch = new();
@@ -142,6 +156,17 @@ namespace CNCSS
             FanucPanel.OffsetSystemSelectionChangedRequested += OnFanucOffsetSystemSelectionChangedRequested;
             FanucPanel.OffsetReadActiveToEditorRequested += OnFanucOffsetReadActiveToEditorRequested;
 
+            OperatorPanel.ModeSelected += OnOperatorModeSelected;
+            OperatorPanel.JogAxisDelta += OnOperatorJogAxisDelta;
+            OperatorPanel.CycleStart += OperatorPanel_CycleStart;
+            OperatorPanel.FeedHold += OperatorPanel_FeedHold;
+            OperatorPanel.CycleStopRequested += OperatorPanel_CycleStop;
+            OperatorPanel.EmergencyResetRequested += OperatorPanel_EmergencyReset;
+            OperatorPanel.FeedWorkOverridePercentChanged += OnOperatorFeedWorkOverridePercentChanged;
+            OperatorPanel.SpindleOverridePercentChanged += OnOperatorSpindleOverridePercentChanged;
+            OperatorPanel.SingleBlockChanged += OperatorPanel_SingleBlockChanged;
+            OperatorPanel.OptionalStopChanged += OperatorPanel_OptionalStopChanged;
+
             _animationTimer = new System.Windows.Threading.DispatcherTimer();
             _animationTimer.Tick += AnimationTimer_Tick;
             _fanucClockTimer.Interval = TimeSpan.FromSeconds(1);
@@ -160,7 +185,59 @@ namespace CNCSS
             FanucPanel.UpdateStatusClock(DateTime.Now);
 
             UpdateResButtons();
+
+            if (OperatorFloatingHost != null)
+            {
+                OperatorFloatingHost.SizeChanged += OperatorFloatingHost_SizeChanged;
+            }
+
+            if (FanucFloatingHost != null)
+            {
+                FanucFloatingHost.SizeChanged += FanucFloatingHost_SizeChanged;
+            }
         }
+
+        private RowDefinition? GetOperatorFloatingBodyRowDefinition()
+        {
+            return OperatorFloatingHost?.Child is Grid g && g.RowDefinitions.Count > 1
+                ? g.RowDefinitions[1]
+                : null;
+        }
+
+        /// <summary>
+        /// Сжимает окно только до высоты шапки: учитываем измерение заголовка (кнопки, шрифт),
+        /// а после layout дополнительно уточняем — у FANUC заголовок иногда давал больший клиент после первого кадра.
+        /// </summary>
+        private static void ApplyCollapsedFloatingHostSize(Border host, Border headerStrip, ScrollViewer? contentScroll)
+        {
+            contentScroll?.ClearValue(FrameworkElement.MaxHeightProperty);
+
+            double interior = Math.Max(120,
+                host.ActualWidth > 4
+                    ? host.ActualWidth - host.BorderThickness.Left - host.BorderThickness.Right
+                    : 640);
+
+            headerStrip.Measure(new Size(interior, double.PositiveInfinity));
+            double headerH = headerStrip.DesiredSize.Height;
+            if (headerH <= 0.5 && !double.IsNaN(headerStrip.Height) && headerStrip.Height > 0)
+            {
+                headerH = headerStrip.Height;
+            }
+            if (headerH <= 0.5)
+            {
+                headerH = 34;
+            }
+            headerH = Math.Ceiling(headerH);
+
+            double collapsedTotal = headerH + host.BorderThickness.Top + host.BorderThickness.Bottom;
+
+            host.MinHeight = collapsedTotal;
+            host.MaxHeight = collapsedTotal;
+            host.Height = collapsedTotal;
+        }
+
+        private void OperatorFloatingHost_SizeChanged(object sender, SizeChangedEventArgs e) =>
+            UpdateOperatorScrollViewport();
 
         private void ConfigureControlMode()
         {
@@ -195,12 +272,350 @@ namespace CNCSS
             }
         }
 
+        private void MenuOperatorPanelItem_Checked(object sender, RoutedEventArgs e)
+        {
+            if (OperatorFloatingHost != null)
+            {
+                OperatorFloatingHost.Visibility = Visibility.Visible;
+            }
+        }
+
+        private void MenuOperatorPanelItem_Unchecked(object sender, RoutedEventArgs e)
+        {
+            if (OperatorFloatingHost != null)
+            {
+                OperatorFloatingHost.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private void UpdateOperatorScrollViewport()
+        {
+            if (OperatorContentScroll == null || OperatorFloatingHost == null || OperatorFloatingHeader == null || _isOperatorMinimized)
+            {
+                return;
+            }
+
+            double h = OperatorFloatingHost.ActualHeight
+                - OperatorFloatingHeader.ActualHeight
+                - OperatorFloatingHost.BorderThickness.Top
+                - OperatorFloatingHost.BorderThickness.Bottom;
+            OperatorContentScroll.MaxHeight = Math.Max(40, h);
+        }
+
+        private void OperatorMinimizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_isOperatorMinimized)
+            {
+                _operatorExpandedHeight = OperatorFloatingHost.ActualHeight;
+            }
+
+            _isOperatorMinimized = !_isOperatorMinimized;
+            OperatorFloatingContent.Visibility = _isOperatorMinimized ? Visibility.Collapsed : Visibility.Visible;
+            OperatorResizeThumb.Visibility = _isOperatorMinimized ? Visibility.Collapsed : Visibility.Visible;
+
+            RowDefinition? bodyRow = GetOperatorFloatingBodyRowDefinition();
+
+            if (_isOperatorMinimized)
+            {
+                if (bodyRow != null)
+                {
+                    bodyRow.MinHeight = 0;
+                    bodyRow.Height = new GridLength(0);
+                }
+
+                ApplyCollapsedFloatingHostSize(OperatorFloatingHost, OperatorFloatingHeader, OperatorContentScroll);
+                Border opHostRef = OperatorFloatingHost;
+                Border opHeaderRef = OperatorFloatingHeader;
+                ScrollViewer? opScrollRef = OperatorContentScroll;
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (!_isOperatorMinimized)
+                    {
+                        return;
+                    }
+
+                    ApplyCollapsedFloatingHostSize(opHostRef, opHeaderRef, opScrollRef);
+                }), DispatcherPriority.Loaded);
+            }
+            else
+            {
+                if (bodyRow != null)
+                {
+                    bodyRow.Height = new GridLength(1, GridUnitType.Star);
+                }
+
+                OperatorFloatingHost.ClearValue(FrameworkElement.MinHeightProperty);
+                OperatorFloatingHost.ClearValue(FrameworkElement.MaxHeightProperty);
+                OperatorFloatingHost.MinHeight = OperatorPanelResizeMinHeight;
+
+                if (!double.IsNaN(_operatorExpandedHeight) && _operatorExpandedHeight >= OperatorPanelResizeMinHeight - 1)
+                {
+                    OperatorFloatingHost.Height = _operatorExpandedHeight;
+                }
+                else
+                {
+                    OperatorFloatingHost.ClearValue(FrameworkElement.HeightProperty);
+                }
+            }
+
+            OperatorMinimizeButton.Content = _isOperatorMinimized ? "□" : "_";
+
+            if (!_isOperatorMinimized)
+            {
+                Dispatcher.BeginInvoke(new Action(UpdateOperatorScrollViewport), DispatcherPriority.Loaded);
+            }
+        }
+
+        private void EnsureOperatorFloatingExpanded()
+        {
+            if (!_isOperatorMinimized)
+            {
+                return;
+            }
+
+            _isOperatorMinimized = false;
+            OperatorFloatingContent.Visibility = Visibility.Visible;
+            OperatorResizeThumb.Visibility = Visibility.Visible;
+            RowDefinition? bodyRow = GetOperatorFloatingBodyRowDefinition();
+            if (bodyRow != null)
+            {
+                bodyRow.MinHeight = 0;
+                bodyRow.Height = new GridLength(1, GridUnitType.Star);
+            }
+
+            OperatorFloatingHost.ClearValue(FrameworkElement.MinHeightProperty);
+            OperatorFloatingHost.ClearValue(FrameworkElement.MaxHeightProperty);
+            OperatorFloatingHost.MinHeight = OperatorPanelResizeMinHeight;
+            OperatorMinimizeButton.Content = "_";
+        }
+
+        private void OperatorResetSizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            e.Handled = true;
+            EnsureOperatorFloatingExpanded();
+
+            OperatorFloatingHost.ClearValue(FrameworkElement.MaxHeightProperty);
+            OperatorFloatingHost.ClearValue(FrameworkElement.MaxWidthProperty);
+            OperatorFloatingHost.ClearValue(FrameworkElement.MinHeightProperty);
+            OperatorFloatingHost.ClearValue(FrameworkElement.MinWidthProperty);
+            OperatorFloatingHost.MinWidth = OperatorPanelResizeMinWidth;
+            OperatorFloatingHost.MinHeight = OperatorPanelResizeMinHeight;
+            OperatorFloatingHost.Width = OperatorPanelResizeMinWidth;
+            OperatorFloatingHost.Height = OperatorPanelResizeMinHeight;
+            _operatorExpandedHeight = OperatorPanelResizeMinHeight;
+            OperatorFloatingHost.UpdateLayout();
+
+            Dispatcher.BeginInvoke(new Action(UpdateOperatorScrollViewport), DispatcherPriority.Loaded);
+        }
+
+        private void OperatorResizeThumb_DragDelta(object sender, DragDeltaEventArgs e)
+        {
+            if (OperatorFloatingHost == null || _isOperatorMinimized)
+            {
+                return;
+            }
+
+            double w = OperatorFloatingHost.Width;
+            if (double.IsNaN(w) || w <= 0)
+            {
+                w = OperatorFloatingHost.ActualWidth;
+            }
+
+            double h = OperatorFloatingHost.Height;
+            if (double.IsNaN(h) || h <= 0)
+            {
+                h = OperatorFloatingHost.ActualHeight;
+            }
+
+            OperatorFloatingHost.Width = Math.Max(OperatorPanelResizeMinWidth, w + e.HorizontalChange);
+            OperatorFloatingHost.Height = Math.Max(OperatorPanelResizeMinHeight, h + e.VerticalChange);
+        }
+
+        private void OperatorFloatingHeader_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            _isOperatorDragging = true;
+            _operatorDragStart = e.GetPosition(this);
+            _operatorStartLeft = Canvas.GetLeft(OperatorFloatingHost);
+            _operatorStartTop = Canvas.GetTop(OperatorFloatingHost);
+            OperatorFloatingHeader.CaptureMouse();
+        }
+
+        private void OperatorFloatingHeader_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (!_isOperatorDragging)
+            {
+                return;
+            }
+
+            Point current = e.GetPosition(this);
+            double dx = current.X - _operatorDragStart.X;
+            double dy = current.Y - _operatorDragStart.Y;
+            Canvas.SetLeft(OperatorFloatingHost, Math.Max(0, _operatorStartLeft + dx));
+            Canvas.SetTop(OperatorFloatingHost, Math.Max(0, _operatorStartTop + dy));
+        }
+
+        private void OperatorFloatingHeader_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (!_isOperatorDragging)
+            {
+                return;
+            }
+
+            _isOperatorDragging = false;
+            OperatorFloatingHeader.ReleaseMouseCapture();
+        }
+
+        private RowDefinition? GetFanucFloatingBodyRowDefinition()
+        {
+            return FanucFloatingHost?.Child is Grid g && g.RowDefinitions.Count > 1
+                ? g.RowDefinitions[1]
+                : null;
+        }
+
+        private void FanucFloatingHost_SizeChanged(object sender, SizeChangedEventArgs e) =>
+            UpdateFanucScrollViewport();
+
+        private void UpdateFanucScrollViewport()
+        {
+            if (FanucContentScroll == null || FanucFloatingHost == null || FanucFloatingHeader == null || _isFanucMinimized)
+            {
+                return;
+            }
+
+            double h = FanucFloatingHost.ActualHeight
+                - FanucFloatingHeader.ActualHeight
+                - FanucFloatingHost.BorderThickness.Top
+                - FanucFloatingHost.BorderThickness.Bottom;
+            FanucContentScroll.MaxHeight = Math.Max(40, h);
+        }
+
         private void FanucMinimizeButton_Click(object sender, RoutedEventArgs e)
         {
+            if (!_isFanucMinimized)
+            {
+                _fanucExpandedHeight = FanucFloatingHost.ActualHeight;
+            }
+
             _isFanucMinimized = !_isFanucMinimized;
             FanucFloatingContent.Visibility = _isFanucMinimized ? Visibility.Collapsed : Visibility.Visible;
-            FanucFloatingHost.Height = _isFanucMinimized ? 34 : 540;
+            FanucResizeThumb.Visibility = _isFanucMinimized ? Visibility.Collapsed : Visibility.Visible;
+
+            RowDefinition? bodyRow = GetFanucFloatingBodyRowDefinition();
+
+            if (_isFanucMinimized)
+            {
+                if (bodyRow != null)
+                {
+                    bodyRow.MinHeight = 0;
+                    bodyRow.Height = new GridLength(0);
+                }
+
+                ApplyCollapsedFloatingHostSize(FanucFloatingHost, FanucFloatingHeader, FanucContentScroll);
+                Border fnHostRef = FanucFloatingHost;
+                Border fnHeaderRef = FanucFloatingHeader;
+                ScrollViewer? fnScrollRef = FanucContentScroll;
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (!_isFanucMinimized)
+                    {
+                        return;
+                    }
+
+                    ApplyCollapsedFloatingHostSize(fnHostRef, fnHeaderRef, fnScrollRef);
+                }), DispatcherPriority.Loaded);
+            }
+            else
+            {
+                if (bodyRow != null)
+                {
+                    bodyRow.Height = new GridLength(1, GridUnitType.Star);
+                }
+
+                FanucFloatingHost.ClearValue(FrameworkElement.MinHeightProperty);
+                FanucFloatingHost.ClearValue(FrameworkElement.MaxHeightProperty);
+                FanucFloatingHost.MinHeight = FanucPanelResizeMinHeight;
+
+                if (!double.IsNaN(_fanucExpandedHeight) && _fanucExpandedHeight >= FanucPanelResizeMinHeight - 1)
+                {
+                    FanucFloatingHost.Height = _fanucExpandedHeight;
+                }
+                else
+                {
+                    FanucFloatingHost.ClearValue(FrameworkElement.HeightProperty);
+                }
+            }
+
             FanucMinimizeButton.Content = _isFanucMinimized ? "□" : "_";
+
+            if (!_isFanucMinimized)
+            {
+                Dispatcher.BeginInvoke(new Action(UpdateFanucScrollViewport), DispatcherPriority.Loaded);
+            }
+        }
+
+        private void EnsureFanucFloatingExpanded()
+        {
+            if (!_isFanucMinimized)
+            {
+                return;
+            }
+
+            _isFanucMinimized = false;
+            FanucFloatingContent.Visibility = Visibility.Visible;
+            FanucResizeThumb.Visibility = Visibility.Visible;
+            RowDefinition? bodyRow = GetFanucFloatingBodyRowDefinition();
+            if (bodyRow != null)
+            {
+                bodyRow.MinHeight = 0;
+                bodyRow.Height = new GridLength(1, GridUnitType.Star);
+            }
+
+            FanucFloatingHost.ClearValue(FrameworkElement.MinHeightProperty);
+            FanucFloatingHost.ClearValue(FrameworkElement.MaxHeightProperty);
+            FanucFloatingHost.MinHeight = FanucPanelResizeMinHeight;
+            FanucMinimizeButton.Content = "_";
+        }
+
+        private void FanucResetSizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            e.Handled = true;
+            EnsureFanucFloatingExpanded();
+
+            FanucFloatingHost.ClearValue(FrameworkElement.MaxHeightProperty);
+            FanucFloatingHost.ClearValue(FrameworkElement.MaxWidthProperty);
+            FanucFloatingHost.ClearValue(FrameworkElement.MinHeightProperty);
+            FanucFloatingHost.ClearValue(FrameworkElement.MinWidthProperty);
+            FanucFloatingHost.MinWidth = FanucPanelResizeMinWidth;
+            FanucFloatingHost.MinHeight = FanucPanelResizeMinHeight;
+            FanucFloatingHost.Width = FanucPanelResizeMinWidth;
+            FanucFloatingHost.Height = FanucPanelResizeMinHeight;
+            _fanucExpandedHeight = FanucPanelResizeMinHeight;
+            FanucFloatingHost.UpdateLayout();
+
+            Dispatcher.BeginInvoke(new Action(UpdateFanucScrollViewport), DispatcherPriority.Loaded);
+        }
+
+        private void FanucResizeThumb_DragDelta(object sender, DragDeltaEventArgs e)
+        {
+            if (FanucFloatingHost == null || _isFanucMinimized)
+            {
+                return;
+            }
+
+            double w = FanucFloatingHost.Width;
+            if (double.IsNaN(w) || w <= 0)
+            {
+                w = FanucFloatingHost.ActualWidth;
+            }
+
+            double h = FanucFloatingHost.Height;
+            if (double.IsNaN(h) || h <= 0)
+            {
+                h = FanucFloatingHost.ActualHeight;
+            }
+
+            FanucFloatingHost.Width = Math.Max(FanucPanelResizeMinWidth, w + e.HorizontalChange);
+            FanucFloatingHost.Height = Math.Max(FanucPanelResizeMinHeight, h + e.VerticalChange);
         }
 
         private void FanucFloatingHeader_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -406,11 +821,50 @@ namespace CNCSS
                 FanucPanel.SetAlarm("NONE", false);
                 FanucPanel.UpdateMode(mode);
                 RefreshDiagnosticsPanel();
+                OperatorPanel.HighlightMode(_currentControllerMode);
                 return;
             }
 
             FanucPanel.UpdateMode(_currentControllerMode);
+            OperatorPanel.HighlightMode(_currentControllerMode);
         }
+
+        private void OnOperatorModeSelected(object? sender, string mode) => OnFanucModeChangedRequested(mode);
+
+        private void OnOperatorJogAxisDelta(object? sender, (string Axis, double Delta) args) =>
+            OnFanucJogRequested(args.Axis, args.Delta);
+
+        private void OperatorPanel_CycleStart(object? sender, EventArgs e) => OnFanucCycleStartRequested();
+
+        private void OperatorPanel_FeedHold(object? sender, EventArgs e) => OnFanucFeedHoldRequested();
+
+        private void OperatorPanel_CycleStop(object? sender, EventArgs e) => OnFanucFeedHoldRequested();
+
+        private void OperatorPanel_EmergencyReset(object? sender, EventArgs e) => OnFanucResetRequested();
+
+        private void OnOperatorFeedWorkOverridePercentChanged(object? sender, double percent)
+        {
+            if (_suppressOperatorFeedOverrideSync || WorkOverrideSlider == null)
+            {
+                return;
+            }
+
+            _suppressOperatorFeedOverrideSync = true;
+            try
+            {
+                double v = Math.Clamp(percent, WorkOverrideSlider.Minimum, WorkOverrideSlider.Maximum);
+                WorkOverrideSlider.Value = v;
+                UpdateOverrideTexts();
+                RefreshDiagnosticsPanel();
+            }
+            finally
+            {
+                _suppressOperatorFeedOverrideSync = false;
+            }
+        }
+
+        private void OnOperatorSpindleOverridePercentChanged(object? sender, double percent) =>
+            _operatorSpindleOverridePercent = percent;
 
         private void OnFanucJogRequested(string axis, double delta)
         {
@@ -543,6 +997,7 @@ namespace CNCSS
             _lastInterlockCode = "SETTING";
             _lastInterlockDetail = enabled ? "Single block enabled" : "Single block disabled";
             RefreshDiagnosticsPanel();
+            OperatorPanel.SyncMachiningToggles(_isSingleBlockEnabled, _isOptionalStopEnabled);
         }
 
         private void OnFanucOptionalStopChangedRequested(bool enabled)
@@ -552,7 +1007,14 @@ namespace CNCSS
             _lastInterlockCode = "SETTING";
             _lastInterlockDetail = enabled ? "Optional stop enabled" : "Optional stop disabled";
             RefreshDiagnosticsPanel();
+            OperatorPanel.SyncMachiningToggles(_isSingleBlockEnabled, _isOptionalStopEnabled);
         }
+
+        private void OperatorPanel_SingleBlockChanged(object? sender, bool enabled) =>
+            OnFanucSingleBlockChangedRequested(enabled);
+
+        private void OperatorPanel_OptionalStopChanged(object? sender, bool enabled) =>
+            OnFanucOptionalStopChangedRequested(enabled);
 
         private void OnFanucDryRunChangedRequested(bool enabled)
         {
@@ -788,6 +1250,10 @@ namespace CNCSS
         private void OverrideSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             UpdateOverrideTexts();
+            if (!_suppressOperatorFeedOverrideSync && ReferenceEquals(sender, WorkOverrideSlider))
+            {
+                OperatorPanel.SyncWorkOverrideSlider(WorkOverrideSlider.Value);
+            }
         }
 
         private void UpdateOverrideTexts()
@@ -1027,6 +1493,15 @@ namespace CNCSS
             }
 
             LoadAndRender(ncPath);
+
+            OperatorPanel.HighlightMode(_currentControllerMode);
+            if (WorkOverrideSlider != null)
+            {
+                OperatorPanel.SyncWorkOverrideSlider(WorkOverrideSlider.Value);
+            }
+
+            OperatorPanel.SyncSpindleOverrideSlider(_operatorSpindleOverridePercent);
+            OperatorPanel.SyncMachiningToggles(_isSingleBlockEnabled, _isOptionalStopEnabled);
         }
 
         private static void CreateDemoNc(string filePath)
@@ -1433,6 +1908,26 @@ M30";
             FanucPanel.OffsetUpdateRequested -= OnFanucOffsetUpdateRequested;
             FanucPanel.OffsetSystemSelectionChangedRequested -= OnFanucOffsetSystemSelectionChangedRequested;
             FanucPanel.OffsetReadActiveToEditorRequested -= OnFanucOffsetReadActiveToEditorRequested;
+            OperatorPanel.ModeSelected -= OnOperatorModeSelected;
+            OperatorPanel.JogAxisDelta -= OnOperatorJogAxisDelta;
+            OperatorPanel.CycleStart -= OperatorPanel_CycleStart;
+            OperatorPanel.FeedHold -= OperatorPanel_FeedHold;
+            OperatorPanel.CycleStopRequested -= OperatorPanel_CycleStop;
+            OperatorPanel.EmergencyResetRequested -= OperatorPanel_EmergencyReset;
+            OperatorPanel.FeedWorkOverridePercentChanged -= OnOperatorFeedWorkOverridePercentChanged;
+            OperatorPanel.SpindleOverridePercentChanged -= OnOperatorSpindleOverridePercentChanged;
+            OperatorPanel.SingleBlockChanged -= OperatorPanel_SingleBlockChanged;
+            OperatorPanel.OptionalStopChanged -= OperatorPanel_OptionalStopChanged;
+            if (OperatorFloatingHost != null)
+            {
+                OperatorFloatingHost.SizeChanged -= OperatorFloatingHost_SizeChanged;
+            }
+
+            if (FanucFloatingHost != null)
+            {
+                FanucFloatingHost.SizeChanged -= FanucFloatingHost_SizeChanged;
+            }
+
             if (_machineCore is IDisposable disposableMachineCore)
             {
                 disposableMachineCore.Dispose();
@@ -1452,7 +1947,15 @@ M30";
 
         private void FanucPanel_Loaded(object sender, RoutedEventArgs e)
         {
+            OperatorPanel.HighlightMode(_currentControllerMode);
+            if (WorkOverrideSlider != null)
+            {
+                OperatorPanel.SyncWorkOverrideSlider(WorkOverrideSlider.Value);
+            }
 
+            OperatorPanel.SyncMachiningToggles(_isSingleBlockEnabled, _isOptionalStopEnabled);
+            UpdateOperatorScrollViewport();
+            UpdateFanucScrollViewport();
         }
     }
 }

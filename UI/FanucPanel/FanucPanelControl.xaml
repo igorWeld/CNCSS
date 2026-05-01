@@ -1,7 +1,10 @@
 <UserControl x:Class="CNCSS.UI.FanucPanel.FanucPanelControl"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             Width="804" Height="452" MinWidth="804" MinHeight="452">
+             HorizontalAlignment="Stretch"
+             VerticalAlignment="Top"
+             MinWidth="600"
+             MinHeight="368">
     <UserControl.Resources>
         <LinearGradientBrush x:Key="KeyWhiteBrush" StartPoint="0,0" EndPoint="0,1">
             <GradientStop Color="#FFFCFCFC" Offset="0"/>
@@ -157,15 +160,17 @@
         <Style TargetType="Button" BasedOn="{StaticResource FanucKeyBaseStyle}"/>
     </UserControl.Resources>
 
-    <Border Background="#FF878787" BorderBrush="#FF656565" BorderThickness="2" Padding="10,8,10,7">
-        <Grid>
+    <Border Background="#FF878787" BorderBrush="#FF656565" BorderThickness="2" Padding="10,8,10,7"
+            HorizontalAlignment="Stretch">
+        <Grid HorizontalAlignment="Stretch">
+            <!-- Пропорции ~456 : 296, растягиваются при увеличении окна -->
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="456"/>
+                <ColumnDefinition Width="228*" MinWidth="340"/>
                 <ColumnDefinition Width="20"/>
-                <ColumnDefinition Width="296"/>
+                <ColumnDefinition Width="148*" MinWidth="200"/>
             </Grid.ColumnDefinitions>
             <Grid.RowDefinitions>
-                <RowDefinition Height="368"/>
+                <RowDefinition Height="*" MinHeight="300"/>
                 <RowDefinition Height="44"/>
             </Grid.RowDefinitions>
 
