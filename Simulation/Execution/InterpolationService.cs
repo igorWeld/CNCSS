@@ -3,6 +3,7 @@ using CNCSS.Data;
 
 namespace CNCSS.Simulation.Execution
 {
+    /// <summary>Чистая логика прогресса интерполяции между точками с учётом подачи и множителя скорости.</summary>
     public static class InterpolationService
     {
         public static (double progress, int intervalMs) InitializeSegment(Point3D start, Point3D target)

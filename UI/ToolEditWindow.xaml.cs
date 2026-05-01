@@ -7,6 +7,7 @@ using System.Linq;
 
 namespace CNCSS.UI
 {
+    /// <summary>Отдельное окно редактирования параметров одного инструмента (альтернатива строкам в окне TOOL DATA).</summary>
     public partial class ToolEditWindow : Window
     {
         private readonly ToolViewModel _tool;

@@ -1,5 +1,6 @@
 namespace CNCSS.Machine.Model
 {
+    /// <summary>Текущие координаты X/Y/Z и основные технологические флаги, публикуемые в события симуляции.</summary>
     public sealed class MachineAxesState
     {
         public double X { get; set; }

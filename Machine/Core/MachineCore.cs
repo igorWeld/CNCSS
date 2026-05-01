@@ -5,6 +5,10 @@ using CNCSS.Simulation.Bus;
 
 namespace CNCSS.Machine.Core
 {
+    /// <summary>
+    /// Реализация <see cref="IMachineCore"/>: подписывается на <see cref="ControllerCommandEvent"/> и публикует
+    /// <see cref="MachineStateChangedEvent"/> и связанные смещения; обрабатывает MDI через локальный парсер.
+    /// </summary>
     public sealed class MachineCore : IMachineCore, IDisposable
     {
         private readonly ISimulationBus _bus;

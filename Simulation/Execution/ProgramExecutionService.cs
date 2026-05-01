@@ -4,11 +4,14 @@ using CNCSS.Simulation.Bus;
 
 namespace CNCSS.Simulation.Execution
 {
+    /// <summary>Решение «следующего шага» программы: нужен ли переход, координаты цели, особые остановки.</summary>
     public sealed class ProgramMoveDecision
     {
         public bool HasMove { get; init; }
         public bool StopForOptional { get; init; }
         public bool EndOfProgram { get; init; }
+        public int? EndProgramMCode { get; init; }
+        public bool RewindToStart { get; init; }
         public int NextIndex { get; init; } // UI line index (0-based)
         public MotionBlockKind BlockKind { get; init; }
         public double TargetX { get; init; }
@@ -16,6 +19,9 @@ namespace CNCSS.Simulation.Execution
         public double TargetZ { get; init; }
     }
 
+    /// <summary>
+    /// Выполнение УП по разобранным <see cref="ParsedCommand"/>: индекс текущего кадра, single block, optional stop, публикация движений в шину.
+    /// </summary>
     public sealed class ProgramExecutionService
     {
         private readonly ISimulationBus _bus;
@@ -127,7 +133,26 @@ namespace CNCSS.Simulation.Execution
 
             if (_commands.Count == 0 || _currentCommandIndex >= _commands.Count - 1)
             {
-                return new ProgramMoveDecision { EndOfProgram = true };
+                int? endMCode = null;
+                if (_commands.Count > 0 && _currentCommandIndex >= 0 && _currentCommandIndex < _commands.Count)
+                {
+                    var finalCommand = _commands[_currentCommandIndex];
+                    if (finalCommand.MCodes.Any(m => m.Number == 30))
+                    {
+                        endMCode = 30;
+                    }
+                    else if (finalCommand.MCodes.Any(m => m.Number == 2))
+                    {
+                        endMCode = 2;
+                    }
+                }
+
+                return new ProgramMoveDecision
+                {
+                    EndOfProgram = true,
+                    EndProgramMCode = endMCode,
+                    RewindToStart = endMCode == 30
+                };
             }
 
             int nextCommandIndex = _currentCommandIndex + 1;

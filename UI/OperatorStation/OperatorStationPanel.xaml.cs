@@ -6,6 +6,7 @@ using System.Windows.Media;
 
 namespace CNCSS.UI.OperatorStation
 {
+    /// <summary>Станция оператора: выбор режима, управление станком, переопределение подачи/шпинделя и jog.</summary>
     public partial class OperatorStationPanel : UserControl
     {
         private bool _suppressToggle;

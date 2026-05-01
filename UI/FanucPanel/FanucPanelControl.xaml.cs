@@ -14,6 +14,7 @@ using System.Windows.Threading;
 
 namespace CNCSS.UI.FanucPanel
 {
+    /// <summary>Визуальный блок пульта FANUC: страницы POS/PROG, аварии, офсеты, программное редактирование и привязка к событиям станка.</summary>
     public partial class FanucPanelControl : UserControl
     {
         private enum FanucPage

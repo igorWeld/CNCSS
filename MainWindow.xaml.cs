@@ -24,11 +24,16 @@ using CNCSS.Machine.Core;
 using CNCSS.Simulation.Bus;
 using CNCSS.Simulation.Execution;
 using CNCSS.UI.FanucPanel;
+using CNCSS.UI.Dialogs;
 using CNCSS.UI.Presenters;
 using System.Diagnostics;
 
 namespace CNCSS
 {
+    /// <summary>
+    /// Главное окно: 3D-сцена (Helix), воксельная заготовка, панели FANUC и операторской станции,
+    /// загрузка УП, воспроизведение и синхронизация с шиной <see cref="CNCSS.Simulation.Bus.ISimulationBus"/>.
+    /// </summary>
     public partial class MainWindow : Window
     {
         private readonly List<Visual3D> _toolpathVisuals = new();
@@ -65,6 +70,14 @@ namespace CNCSS
         private readonly StockRenderService _stockRenderService = new();
         private readonly ToolpathRenderService _toolpathRenderService = new();
         private static readonly bool EnableLegacyUiControls = false;
+        private readonly TranslateTransform3D _toolTransform = new();
+        private ToolViewModel? _cachedToolGeometryTool;
+        private (double Diameter, double ShankDiameter, double FluteLength, double OverallLength, Color FluteColor) _cachedToolGeometryKey;
+        private bool _hasCachedToolGeometry;
+        private ToolSettingsWindow? _toolSettingsDialog;
+        private readonly object _machineStateUiSync = new();
+        private MachineStateChangedEvent? _pendingMachineStateEvent;
+        private bool _machineStateUiUpdateQueued;
         private string _currentControllerMode = "MEM";
         private bool _isControllerRunning;
         private string _lastInterlockCode = "OK";
@@ -115,8 +128,8 @@ namespace CNCSS
         private bool _suppressOperatorFeedOverrideSync;
         private double _operatorSpindleOverridePercent = 100.0;
         private double _operatorExpandedHeight = double.NaN;
-        private const double OperatorPanelResizeMinWidth = 432;
-        private const double OperatorPanelResizeMinHeight = 356;
+        private const double OperatorPanelResizeMinWidth = 346;
+        private const double OperatorPanelResizeMinHeight = 285;
         private readonly System.Windows.Threading.DispatcherTimer _fanucClockTimer = new();
         private readonly Stopwatch _runTimeStopwatch = new();
         private readonly Stopwatch _cycleTimeStopwatch = new();
@@ -128,6 +141,8 @@ namespace CNCSS
             InitializeComponent();
             Loaded += MainWindow_Loaded;
             CompositionTarget.Rendering += OnRendering;
+            PreviewMouseDown += MainWindow_PreviewMouseDown;
+            PreviewKeyDown += MainWindow_PreviewKeyDown;
             ToolsList.ItemsSource = _tools;
 
             _simulationBus = new SimulationBus();
@@ -195,6 +210,107 @@ namespace CNCSS
             {
                 FanucFloatingHost.SizeChanged += FanucFloatingHost_SizeChanged;
             }
+        }
+
+        private void MainWindow_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.OriginalSource is not DependencyObject source)
+            {
+                return;
+            }
+
+            Button? button = FindVisualParent<Button>(source);
+            if (button != null)
+            {
+                string caption = GetInteractiveCaption(button);
+                if (!string.IsNullOrWhiteSpace(caption))
+                {
+                    FanucPanel.LogUserAction($"PRESS: {caption}");
+                }
+                return;
+            }
+
+            CheckBox? checkBox = FindVisualParent<CheckBox>(source);
+            if (checkBox != null)
+            {
+                string caption = GetInteractiveCaption(checkBox);
+                if (!string.IsNullOrWhiteSpace(caption))
+                {
+                    FanucPanel.LogUserAction($"TOGGLE: {caption}");
+                }
+                return;
+            }
+
+            RadioButton? radio = FindVisualParent<RadioButton>(source);
+            if (radio != null)
+            {
+                string caption = GetInteractiveCaption(radio);
+                if (!string.IsNullOrWhiteSpace(caption))
+                {
+                    FanucPanel.LogUserAction($"SELECT: {caption}");
+                }
+                return;
+            }
+        }
+
+        private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.None)
+            {
+                return;
+            }
+
+            string key = e.Key.ToString().ToUpperInvariant();
+            if (Keyboard.Modifiers != ModifierKeys.None)
+            {
+                key = $"{Keyboard.Modifiers.ToString().ToUpperInvariant()}+{key}";
+            }
+
+            FanucPanel.LogUserAction($"KEY: {key}");
+        }
+
+        private static T? FindVisualParent<T>(DependencyObject? start) where T : DependencyObject
+        {
+            DependencyObject? current = start;
+            while (current != null)
+            {
+                if (current is T typed)
+                {
+                    return typed;
+                }
+
+                current = GetSafeParent(current);
+            }
+
+            return null;
+        }
+
+        private static DependencyObject? GetSafeParent(DependencyObject current)
+        {
+            if (current is Visual || current is Visual3D)
+            {
+                return VisualTreeHelper.GetParent(current);
+            }
+
+            if (current is FrameworkContentElement fce)
+            {
+                return fce.Parent;
+            }
+
+            if (current is ContentElement ce)
+            {
+                return ContentOperations.GetParent(ce);
+            }
+
+            return null;
+        }
+
+        private static string GetInteractiveCaption(FrameworkElement element)
+        {
+            string? byName = element.Name;
+            string? byText = (element as ContentControl)?.Content?.ToString();
+            string caption = string.IsNullOrWhiteSpace(byText) ? byName ?? string.Empty : byText;
+            return caption.Replace("\r", " ").Replace("\n", " ").Trim();
         }
 
         private RowDefinition? GetOperatorFloatingBodyRowDefinition()
@@ -389,23 +505,127 @@ namespace CNCSS
             OperatorMinimizeButton.Content = "_";
         }
 
+        private static Size MeasureFloatingContentSize(Border headerStrip, FrameworkElement contentElement)
+        {
+            headerStrip.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            contentElement.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+
+            var headerSize = headerStrip.DesiredSize;
+            var contentSize = contentElement.DesiredSize;
+            return new Size(
+                Math.Max(headerSize.Width, contentSize.Width),
+                headerSize.Height + contentSize.Height);
+        }
+
+        private static void ApplyFloatingHostSizeToFitContent(
+            Border host,
+            Border headerStrip,
+            ScrollViewer contentScroll,
+            FrameworkElement contentElement,
+            double minWidth,
+            double minHeight)
+        {
+            host.ClearValue(FrameworkElement.MaxHeightProperty);
+            host.ClearValue(FrameworkElement.MaxWidthProperty);
+            host.ClearValue(FrameworkElement.MinHeightProperty);
+            host.ClearValue(FrameworkElement.MinWidthProperty);
+            contentScroll.ClearValue(FrameworkElement.MaxHeightProperty);
+
+            var desired = MeasureFloatingContentSize(headerStrip, contentElement);
+            double width = Math.Max(minWidth, Math.Ceiling(desired.Width + host.BorderThickness.Left + host.BorderThickness.Right));
+            double height = Math.Max(minHeight, Math.Ceiling(desired.Height + host.BorderThickness.Top + host.BorderThickness.Bottom));
+
+            host.MinWidth = minWidth;
+            host.MinHeight = minHeight;
+            host.Width = width;
+            host.Height = height;
+        }
+
+        private static double ResolveHostWidth(Border host, double fallbackMinWidth)
+        {
+            if (host.ActualWidth > 1)
+            {
+                return host.ActualWidth;
+            }
+
+            if (!double.IsNaN(host.Width) && host.Width > 1)
+            {
+                return host.Width;
+            }
+
+            return fallbackMinWidth;
+        }
+
+        private static double ResolveHostHeight(Border host, double fallbackMinHeight)
+        {
+            if (host.ActualHeight > 1)
+            {
+                return host.ActualHeight;
+            }
+
+            if (!double.IsNaN(host.Height) && host.Height > 1)
+            {
+                return host.Height;
+            }
+
+            return fallbackMinHeight;
+        }
+
+        private void ArrangeFloatingPanelsAtStartup()
+        {
+            if (FanucFloatingHost == null || OperatorFloatingHost == null || Viewport == null)
+            {
+                return;
+            }
+
+            const double topMargin = 24;
+            const double rightMargin = 24;
+            const double rowGap = 10;
+
+            double viewportWidth = Viewport.ActualWidth > 1 ? Viewport.ActualWidth : ActualWidth;
+            double viewportHeight = Viewport.ActualHeight > 1 ? Viewport.ActualHeight : ActualHeight;
+
+            double fanucW = ResolveHostWidth(FanucFloatingHost, FanucPanelResizeMinWidth);
+            double fanucH = ResolveHostHeight(FanucFloatingHost, FanucPanelResizeMinHeight);
+            double operatorW = ResolveHostWidth(OperatorFloatingHost, OperatorPanelResizeMinWidth);
+            double operatorH = ResolveHostHeight(OperatorFloatingHost, OperatorPanelResizeMinHeight);
+
+            double fanucLeft = Math.Max(0, viewportWidth - rightMargin - fanucW);
+            double fanucTop = Math.Max(0, topMargin);
+            Canvas.SetLeft(FanucFloatingHost, fanucLeft);
+            Canvas.SetTop(FanucFloatingHost, fanucTop);
+
+            double operatorLeft = Math.Max(0, viewportWidth - rightMargin - operatorW);
+            double operatorTop = fanucTop + fanucH + rowGap;
+            double maxBottomTop = Math.Max(topMargin, viewportHeight - operatorH - 8);
+            if (operatorTop > maxBottomTop)
+            {
+                operatorTop = maxBottomTop;
+            }
+
+            Canvas.SetLeft(OperatorFloatingHost, operatorLeft);
+            Canvas.SetTop(OperatorFloatingHost, Math.Max(0, operatorTop));
+        }
+
         private void OperatorResetSizeButton_Click(object sender, RoutedEventArgs e)
         {
             e.Handled = true;
             EnsureOperatorFloatingExpanded();
 
-            OperatorFloatingHost.ClearValue(FrameworkElement.MaxHeightProperty);
-            OperatorFloatingHost.ClearValue(FrameworkElement.MaxWidthProperty);
-            OperatorFloatingHost.ClearValue(FrameworkElement.MinHeightProperty);
-            OperatorFloatingHost.ClearValue(FrameworkElement.MinWidthProperty);
-            OperatorFloatingHost.MinWidth = OperatorPanelResizeMinWidth;
-            OperatorFloatingHost.MinHeight = OperatorPanelResizeMinHeight;
-            OperatorFloatingHost.Width = OperatorPanelResizeMinWidth;
-            OperatorFloatingHost.Height = OperatorPanelResizeMinHeight;
-            _operatorExpandedHeight = OperatorPanelResizeMinHeight;
-            OperatorFloatingHost.UpdateLayout();
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                ApplyFloatingHostSizeToFitContent(
+                    OperatorFloatingHost,
+                    OperatorFloatingHeader,
+                    OperatorContentScroll,
+                    OperatorPanel,
+                    OperatorPanelResizeMinWidth,
+                    OperatorPanelResizeMinHeight);
 
-            Dispatcher.BeginInvoke(new Action(UpdateOperatorScrollViewport), DispatcherPriority.Loaded);
+                _operatorExpandedHeight = OperatorFloatingHost.Height;
+                OperatorFloatingHost.UpdateLayout();
+                UpdateOperatorScrollViewport();
+            }), DispatcherPriority.Loaded);
         }
 
         private void OperatorResizeThumb_DragDelta(object sender, DragDeltaEventArgs e)
@@ -581,18 +801,20 @@ namespace CNCSS
             e.Handled = true;
             EnsureFanucFloatingExpanded();
 
-            FanucFloatingHost.ClearValue(FrameworkElement.MaxHeightProperty);
-            FanucFloatingHost.ClearValue(FrameworkElement.MaxWidthProperty);
-            FanucFloatingHost.ClearValue(FrameworkElement.MinHeightProperty);
-            FanucFloatingHost.ClearValue(FrameworkElement.MinWidthProperty);
-            FanucFloatingHost.MinWidth = FanucPanelResizeMinWidth;
-            FanucFloatingHost.MinHeight = FanucPanelResizeMinHeight;
-            FanucFloatingHost.Width = FanucPanelResizeMinWidth;
-            FanucFloatingHost.Height = FanucPanelResizeMinHeight;
-            _fanucExpandedHeight = FanucPanelResizeMinHeight;
-            FanucFloatingHost.UpdateLayout();
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                ApplyFloatingHostSizeToFitContent(
+                    FanucFloatingHost,
+                    FanucFloatingHeader,
+                    FanucContentScroll,
+                    FanucPanel,
+                    FanucPanelResizeMinWidth,
+                    FanucPanelResizeMinHeight);
 
-            Dispatcher.BeginInvoke(new Action(UpdateFanucScrollViewport), DispatcherPriority.Loaded);
+                _fanucExpandedHeight = FanucFloatingHost.Height;
+                FanucFloatingHost.UpdateLayout();
+                UpdateFanucScrollViewport();
+            }), DispatcherPriority.Loaded);
         }
 
         private void FanucResizeThumb_DragDelta(object sender, DragDeltaEventArgs e)
@@ -656,6 +878,209 @@ namespace CNCSS
         private void MenuFeedHold_Click(object sender, RoutedEventArgs e) => OnFanucFeedHoldRequested();
         private void MenuResetStop_Click(object sender, RoutedEventArgs e) => OnFanucResetRequested();
 
+        private void MenuProgramDialog_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new Window
+            {
+                Owner = this,
+                Title = "Симуляция - Программа",
+                Width = 780,
+                Height = 620,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner
+            };
+
+            var root = new Grid { Margin = new Thickness(12) };
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(120) });
+
+            var list = new ListBox
+            {
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 13,
+                ItemsSource = GCodeList.ItemsSource
+            };
+            list.SelectionChanged += (_, _) =>
+            {
+                if (list.SelectedIndex >= 0 && GCodeList.SelectedIndex != list.SelectedIndex)
+                {
+                    GCodeList.SelectedIndex = list.SelectedIndex;
+                    GCodeList.ScrollIntoView(GCodeList.SelectedItem);
+                }
+            };
+            list.SelectedIndex = GCodeList.SelectedIndex;
+            Grid.SetRow(list, 0);
+            root.Children.Add(list);
+
+            var btns = new UniformGrid { Columns = 3, Margin = new Thickness(0, 10, 0, 10) };
+            btns.Children.Add(new Button { Content = "Cycle Start", Margin = new Thickness(3) });
+            btns.Children.Add(new Button { Content = "Feed Hold", Margin = new Thickness(3) });
+            btns.Children.Add(new Button { Content = "Reset / Stop", Margin = new Thickness(3) });
+            ((Button)btns.Children[0]).Click += (_, _) => OnFanucCycleStartRequested();
+            ((Button)btns.Children[1]).Click += (_, _) => OnFanucFeedHoldRequested();
+            ((Button)btns.Children[2]).Click += (_, _) => OnFanucResetRequested();
+            Grid.SetRow(btns, 1);
+            root.Children.Add(btns);
+
+            var stats = new TextBox
+            {
+                IsReadOnly = true,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 11,
+                Background = Brushes.White,
+                Text = StatsBox.Text
+            };
+            Grid.SetRow(stats, 2);
+            root.Children.Add(stats);
+
+            dialog.Content = root;
+            dialog.ShowDialog();
+        }
+
+        private void MenuToolsDialog_Click(object sender, RoutedEventArgs e)
+        {
+            if (_toolSettingsDialog != null)
+            {
+                if (_toolSettingsDialog.IsLoaded)
+                {
+                    _toolSettingsDialog.Activate();
+                    return;
+                }
+
+                _toolSettingsDialog = null;
+            }
+
+            var wnd = new ToolSettingsWindow(
+                    _tools,
+                    GetProgramReferencedToolNumbers(),
+                    vm => vm.PropertyChanged += Tool_PropertyChanged,
+                    vm => vm.PropertyChanged -= Tool_PropertyChanged,
+                    OnToolSettingsAppliedFromDialog)
+            {
+                Owner = this
+            };
+
+            wnd.Closed += (_, _) =>
+            {
+                if (ReferenceEquals(_toolSettingsDialog, wnd))
+                {
+                    _toolSettingsDialog = null;
+                }
+            };
+
+            _toolSettingsDialog = wnd;
+            wnd.Show();
+        }
+
+        private void OnToolSettingsAppliedFromDialog()
+        {
+            InvalidateToolGeometryCache();
+            if (ToolsList.SelectedItem is ToolViewModel active)
+            {
+                UpdateToolGeometry(active, GetCurrentPosition());
+            }
+            else
+            {
+                UpdateToolGeometry(null, GetCurrentPosition());
+            }
+
+            FanucPanel.LogUserAction("Инструмент: применены параметры (Симуляция → Инструмент)");
+        }
+
+        private IReadOnlyList<int> GetProgramReferencedToolNumbers()
+        {
+            if (_currentParser == null)
+            {
+                return Array.Empty<int>();
+            }
+
+            return _currentParser.Commands
+                .Where(c => c.ToolNumber.HasValue)
+                .Select(c => c.ToolNumber!.Value)
+                .Distinct()
+                .OrderBy(n => n)
+                .ToList();
+        }
+
+        private void MenuStockDialog_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new Window
+            {
+                Owner = this,
+                Title = "Симуляция - Заготовка",
+                Width = 460,
+                Height = 520,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner
+            };
+
+            var root = new StackPanel { Margin = new Thickness(12) };
+            var visible = new CheckBox { Content = "Показывать заготовку", IsChecked = StockVisibleCheck.IsChecked, Margin = new Thickness(0, 0, 0, 10) };
+            root.Children.Add(visible);
+
+            root.Children.Add(new TextBlock { Text = "Минимум (X, Y, Z)" });
+            var min = new UniformGrid { Columns = 3, Margin = new Thickness(0, 3, 0, 8) };
+            var minX = new TextBox { Text = StockMinX.Text, Margin = new Thickness(2) };
+            var minY = new TextBox { Text = StockMinY.Text, Margin = new Thickness(2) };
+            var minZ = new TextBox { Text = StockMinZ.Text, Margin = new Thickness(2) };
+            min.Children.Add(minX); min.Children.Add(minY); min.Children.Add(minZ);
+            root.Children.Add(min);
+
+            root.Children.Add(new TextBlock { Text = "Максимум (X, Y, Z)" });
+            var max = new UniformGrid { Columns = 3, Margin = new Thickness(0, 3, 0, 8) };
+            var maxX = new TextBox { Text = StockMaxX.Text, Margin = new Thickness(2) };
+            var maxY = new TextBox { Text = StockMaxY.Text, Margin = new Thickness(2) };
+            var maxZ = new TextBox { Text = StockMaxZ.Text, Margin = new Thickness(2) };
+            max.Children.Add(maxX); max.Children.Add(maxY); max.Children.Add(maxZ);
+            root.Children.Add(max);
+
+            root.Children.Add(new TextBlock { Text = "Разрешение (мм)" });
+            var res = new ComboBox { Margin = new Thickness(0, 3, 0, 8) };
+            res.Items.Add(new ComboBoxItem { Content = "Высокая (0.1)", Tag = "0.1" });
+            res.Items.Add(new ComboBoxItem { Content = "Средняя (0.3)", Tag = "0.3" });
+            res.Items.Add(new ComboBoxItem { Content = "Грубая (0.6)", Tag = "0.6" });
+            if (Math.Abs(_selectedResolution - 0.1) < 0.0001) res.SelectedIndex = 0;
+            else if (Math.Abs(_selectedResolution - 0.3) < 0.0001) res.SelectedIndex = 1;
+            else res.SelectedIndex = 2;
+            root.Children.Add(res);
+
+            root.Children.Add(new TextBlock { Text = "Цвет" });
+            var color = new ComboBox { Margin = new Thickness(0, 3, 0, 12) };
+            foreach (ComboBoxItem item in StockColorCombo.Items)
+            {
+                color.Items.Add(new ComboBoxItem { Content = item.Content, Tag = item.Tag });
+            }
+            color.SelectedIndex = Math.Max(0, StockColorCombo.SelectedIndex);
+            root.Children.Add(color);
+
+            var apply = new Button { Content = "Применить", Width = 120, HorizontalAlignment = HorizontalAlignment.Right };
+            apply.Click += (_, _) =>
+            {
+                StockVisibleCheck.IsChecked = visible.IsChecked;
+                StockMinX.Text = minX.Text; StockMinY.Text = minY.Text; StockMinZ.Text = minZ.Text;
+                StockMaxX.Text = maxX.Text; StockMaxY.Text = maxY.Text; StockMaxZ.Text = maxZ.Text;
+                if (res.SelectedItem is ComboBoxItem r && double.TryParse(r.Tag?.ToString(), out double rv))
+                {
+                    _selectedResolution = rv;
+                    UpdateResButtons();
+                }
+                if (color.SelectedItem is ComboBoxItem c)
+                {
+                    StockColorCombo.SelectedIndex = color.SelectedIndex;
+                }
+
+                StockVisible_Changed(this, new RoutedEventArgs());
+                ApplyStock();
+                dialog.DialogResult = true;
+                dialog.Close();
+            };
+            root.Children.Add(apply);
+
+            dialog.Content = root;
+            dialog.ShowDialog();
+        }
+
         private void MenuSpeedPreset_Click(object sender, RoutedEventArgs e)
         {
             if (sender is MenuItem item &&
@@ -691,37 +1116,61 @@ namespace CNCSS
 
         private void OnMachineStateChanged(MachineStateChangedEvent evt)
         {
-            Dispatcher.Invoke(() =>
+            lock (_machineStateUiSync)
             {
-                _isControllerRunning = evt.IsRunning;
-                StatusText.Text = evt.IsRunning ? "Controller: Cycle start" : "Controller: Feed hold";
-                FanucPanel.UpdateRunState(evt.IsRunning);
-                FanucPanel.UpdateMachinePosition(evt.X, evt.Y, evt.Z);
-                PositionText.Text = $"X: {evt.X:F3} Y: {evt.Y:F3} Z: {evt.Z:F3}";
-                string spindleCode = evt.IsSpindleOn ? (evt.IsSpindleCW ? "M3" : "M4") : "M5";
-                string toolDisplay = evt.ToolNumber.HasValue ? $"T{evt.ToolNumber.Value}" : "-";
-                FanucPanel.UpdatePosRuntime(evt.FeedRate, toolDisplay, evt.SpindleSpeed, spindleCode, evt.IsCoolantOn);
-                _currentCoordSystem = evt.CoordinateSystem;
-                _currentOffsetX = evt.OffsetX;
-                _currentOffsetY = evt.OffsetY;
-                _currentOffsetZ = evt.OffsetZ;
-                FanucPanel.UpdateOffsets(_currentCoordSystem, _currentOffsetX, _currentOffsetY, _currentOffsetZ);
+                _pendingMachineStateEvent = evt;
+                if (_machineStateUiUpdateQueued)
+                {
+                    return;
+                }
 
-                var machinePos = new Point3D(evt.X, evt.Y, evt.Z);
-                _lastPosition = machinePos;
-                _uiRenderService.SyncToolVisual(
-                    evt.ToolNumber,
-                    _tools,
-                    ToolsList,
-                    Viewport,
-                    _toolVisual,
-                    machinePos,
-                    UpdateToolGeometry,
-                    tool => tool.PropertyChanged += Tool_PropertyChanged,
-                    _currentParser == null || GCodeList.SelectedIndex < 0);
+                _machineStateUiUpdateQueued = true;
+            }
 
-                RefreshDiagnosticsPanel();
-            });
+            Dispatcher.BeginInvoke(new Action(ApplyPendingMachineStateUpdate), DispatcherPriority.Render);
+        }
+
+        private void ApplyPendingMachineStateUpdate()
+        {
+            MachineStateChangedEvent? evt;
+            lock (_machineStateUiSync)
+            {
+                evt = _pendingMachineStateEvent;
+                _pendingMachineStateEvent = null;
+                _machineStateUiUpdateQueued = false;
+            }
+
+            if (evt == null)
+            {
+                return;
+            }
+
+            _isControllerRunning = evt.IsRunning;
+            StatusText.Text = evt.IsRunning ? "Controller: Cycle start" : "Controller: Feed hold";
+            FanucPanel.UpdateRunState(evt.IsRunning);
+            FanucPanel.UpdateMachinePosition(evt.X, evt.Y, evt.Z);
+            PositionText.Text = $"X: {evt.X:F3} Y: {evt.Y:F3} Z: {evt.Z:F3}";
+            string spindleCode = evt.IsSpindleOn ? (evt.IsSpindleCW ? "M3" : "M4") : "M5";
+            string toolDisplay = evt.ToolNumber.HasValue ? $"T{evt.ToolNumber.Value}" : "-";
+            FanucPanel.UpdatePosRuntime(evt.FeedRate, toolDisplay, evt.SpindleSpeed, spindleCode, evt.IsCoolantOn);
+            _currentCoordSystem = evt.CoordinateSystem;
+            _currentOffsetX = evt.OffsetX;
+            _currentOffsetY = evt.OffsetY;
+            _currentOffsetZ = evt.OffsetZ;
+            FanucPanel.UpdateOffsets(_currentCoordSystem, _currentOffsetX, _currentOffsetY, _currentOffsetZ);
+
+            var machinePos = new Point3D(evt.X, evt.Y, evt.Z);
+            _lastPosition = machinePos;
+            _uiRenderService.SyncToolVisual(
+                evt.ToolNumber,
+                _tools,
+                ToolsList,
+                Viewport,
+                _toolVisual,
+                machinePos,
+                UpdateToolGeometry,
+                tool => tool.PropertyChanged += Tool_PropertyChanged,
+                _currentParser == null || GCodeList.SelectedIndex < 0);
         }
 
         private void OnAlarmRaised(AlarmRaisedEvent evt)
@@ -1163,21 +1612,64 @@ namespace CNCSS
             group.Children.Add(_fluteModel);
             group.Children.Add(_shankModel);
             _toolVisual.Content = group;
+            _toolVisual.Transform = _toolTransform;
         }
 
         private void UpdateToolGeometry(ToolViewModel? tool, Point3D position)
         {
-            if (tool == null) { _fluteModel.Geometry = null; _shankModel.Geometry = null; return; }
+            if (tool == null)
+            {
+                _fluteModel.Geometry = null;
+                _shankModel.Geometry = null;
+                _cachedToolGeometryTool = null;
+                _hasCachedToolGeometry = false;
+                return;
+            }
+
+            EnsureToolGeometry(tool);
+            UpdateToolTransform(position);
+        }
+
+        private void EnsureToolGeometry(ToolViewModel tool)
+        {
+            var key = (tool.Diameter, tool.ShankDiameter, tool.FluteLength, tool.OverallLength, tool.FluteColor);
+            if (_hasCachedToolGeometry && ReferenceEquals(_cachedToolGeometryTool, tool) && _cachedToolGeometryKey.Equals(key))
+            {
+                return;
+            }
+
             double fluteRadius = tool.Diameter / 2.0;
             double shankRadius = tool.ShankDiameter / 2.0;
+            double shankEnd = Math.Max(tool.FluteLength, tool.OverallLength);
+
             var fluteBuilder = new MeshBuilder();
             fluteBuilder.AddCylinder(new Point3D(0, 0, 0), new Point3D(0, 0, tool.FluteLength), fluteRadius, 20, true, true);
             _fluteModel.Geometry = fluteBuilder.ToMesh();
+
+            Material fluteMat = MaterialHelper.CreateMaterial(tool.FluteColor);
+            _fluteModel.Material = fluteMat;
+            _fluteModel.BackMaterial = fluteMat;
+
             var shankBuilder = new MeshBuilder();
-            double shankEnd = Math.Max(tool.FluteLength, tool.OverallLength);
             shankBuilder.AddCylinder(new Point3D(0, 0, tool.FluteLength), new Point3D(0, 0, shankEnd), shankRadius, 20, true, true);
             _shankModel.Geometry = shankBuilder.ToMesh();
-            _toolVisual.Transform = new TranslateTransform3D(position.X, position.Y, position.Z);
+
+            _cachedToolGeometryTool = tool;
+            _cachedToolGeometryKey = key;
+            _hasCachedToolGeometry = true;
+        }
+
+        private void InvalidateToolGeometryCache()
+        {
+            _cachedToolGeometryTool = null;
+            _hasCachedToolGeometry = false;
+        }
+
+        private void UpdateToolTransform(Point3D position)
+        {
+            _toolTransform.OffsetX = position.X;
+            _toolTransform.OffsetY = position.Y;
+            _toolTransform.OffsetZ = position.Z;
         }
 
         private void Tool_PropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -1225,6 +1717,36 @@ namespace CNCSS
                 baseSpeed = (state.FeedRate / 60.0) * (overrideVal / 100.0);
             }
             return baseSpeed * _speedMultiplier;
+        }
+
+        private void ApplyRuntimeStatusForLine(int selectedLine)
+        {
+            if (_currentParser == null || selectedLine <= 0)
+            {
+                return;
+            }
+
+            var lastCmd = _currentParser.Commands.LastOrDefault(c => c.LineNumber <= selectedLine);
+            if (lastCmd == null)
+            {
+                return;
+            }
+
+            FanucPanel.UpdateProgramLine(lastCmd.LineNumber);
+            var state = lastCmd.EndState;
+            ApplyRuntimeStatus(state);
+            if (_machineCore is MachineCore runtimeSyncMachineCore)
+            {
+                runtimeSyncMachineCore.SyncRuntimeFromState(state);
+            }
+        }
+
+        private void UpdateProgramProgress()
+        {
+            if (MainProgressBar != null && _currentLines.Length > 0)
+            {
+                MainProgressBar.Value = (double)(GCodeList.SelectedIndex + 1) / _currentLines.Length * 100;
+            }
         }
 
         private double _simulationMultiplier = 2.0;
@@ -1277,11 +1799,6 @@ namespace CNCSS
                 return;
             }
 
-            // Обновляем прогресс-бар выполнения G-кода
-            if (MainProgressBar != null && _currentLines.Length > 0)
-            {
-                MainProgressBar.Value = (double)(GCodeList.SelectedIndex + 1) / _currentLines.Length * 100;
-            }
             if (_currentParser == null)
             {
                 StopAnimationCycle();
@@ -1291,13 +1808,14 @@ namespace CNCSS
             var tick = _playbackLoopService.Tick(
                 machineCore?.State.IsRunning ?? false,
                 _lastPosition,
+                GCodeList.SelectedIndex,
                 state => GetPhysicalSpeed(state),
                 _simulationMultiplier,
                 _fpsSlowdownFactor);
 
             if (tick.Action == PlaybackLoopAction.StopProgram)
             {
-                StopAnimationCycle();
+                StopCycleForProgramEnd(tick.EndProgramMCode, tick.RewindToStart);
                 return;
             }
 
@@ -1307,6 +1825,8 @@ namespace CNCSS
                 GCodeList.SelectedIndex = tick.NewIndex;
                 GCodeList.ScrollIntoView(GCodeList.SelectedItem);
                 SyncToolWithState();
+                ApplyRuntimeStatusForLine(tick.NewIndex + 1);
+                UpdateProgramProgress();
                 _suppressSelectionSideEffects = false;
             }
 
@@ -1320,6 +1840,8 @@ namespace CNCSS
                 GCodeList.SelectedIndex = tick.NewIndex;
                 GCodeList.ScrollIntoView(GCodeList.SelectedItem);
                 SyncToolWithState();
+                ApplyRuntimeStatusForLine(tick.NewIndex + 1);
+                UpdateProgramProgress();
                 _suppressSelectionSideEffects = false;
 
                 if (_controllerCore.FeedHold())
@@ -1334,21 +1856,6 @@ namespace CNCSS
 
             PositionText.Text = $"X: {currentPos.X:F3} Y: {currentPos.Y:F3} Z: {currentPos.Z:F3}";
 
-            if (_currentParser != null && GCodeList.SelectedIndex >= 0)
-            {
-                int selectedLine = GCodeList.SelectedIndex + 1;
-                var lastCmd = _currentParser.Commands.LastOrDefault(c => c.LineNumber <= selectedLine);
-                if (lastCmd != null)
-                {
-                    FanucPanel.UpdateProgramLine(lastCmd.LineNumber);
-                    var state = lastCmd.EndState;
-                    ApplyRuntimeStatus(state);
-                    if (_machineCore is MachineCore runtimeSyncMachineCore)
-                    {
-                        runtimeSyncMachineCore.SyncRuntimeFromState(state);
-                    }
-                }
-            }
             if (ToolsList.SelectedItem is ToolViewModel tool)
             {
                 UpdateToolGeometry(tool, currentPos);
@@ -1443,6 +1950,48 @@ namespace CNCSS
             PauseButton.IsEnabled = false;
         }
 
+        private void StopCycleForProgramEnd(int? endProgramMCode, bool rewindToStart)
+        {
+            _animationTimer.Stop();
+            _programExecutionService.ClearSingleBlockStop();
+            if (_runTimeStopwatch.IsRunning) _runTimeStopwatch.Stop();
+            if (_cycleTimeStopwatch.IsRunning) _cycleTimeStopwatch.Stop();
+            _accumulatedRunTime = _runTimeStopwatch.Elapsed;
+            _accumulatedCycleTime = _cycleTimeStopwatch.Elapsed;
+            PlayButton.IsEnabled = true;
+            PauseButton.IsEnabled = false;
+
+            // Конец программы всегда останавливает цикл.
+            _controllerCore.FeedHold();
+
+            if (rewindToStart && GCodeList.Items.Count > 0)
+            {
+                _suppressSelectionSideEffects = true;
+                GCodeList.SelectedIndex = 0;
+                GCodeList.ScrollIntoView(GCodeList.SelectedItem);
+                _suppressSelectionSideEffects = false;
+
+                _programExecutionService.SetCurrentIndex(0);
+                _lastPosition = GetCurrentPosition();
+                _interpolationProgress = 1.0;
+                _playbackLoopService.BeginSegmentFrom(_lastPosition);
+                ApplyRuntimeStatusForLine(1);
+                UpdateProgramProgress();
+            }
+            else
+            {
+                _programExecutionService.SetCurrentIndex(Math.Max(0, GCodeList.SelectedIndex));
+            }
+
+            _lastInterlockCode = endProgramMCode == 30 ? "M30" : endProgramMCode == 2 ? "M2" : "PROGRAM_END";
+            _lastInterlockDetail = endProgramMCode == 30
+                ? "M30: cycle stop and rewind to start"
+                : endProgramMCode == 2
+                    ? "M2: cycle stop"
+                    : "Program ended";
+            RefreshDiagnosticsPanel();
+        }
+
         private void StopAnimationCycle()
         {
             _animationTimer.Stop();
@@ -1502,6 +2051,8 @@ namespace CNCSS
 
             OperatorPanel.SyncSpindleOverrideSlider(_operatorSpindleOverridePercent);
             OperatorPanel.SyncMachiningToggles(_isSingleBlockEnabled, _isOptionalStopEnabled);
+
+            Dispatcher.BeginInvoke(new Action(ArrangeFloatingPanelsAtStartup), DispatcherPriority.Loaded);
         }
 
         private static void CreateDemoNc(string filePath)
@@ -1689,6 +2240,7 @@ M30";
         {
             try
             {
+                _toolSettingsDialog?.Close();
                 ClearToolpath();
                 _lineVisualsMap.Clear();
                 _currentLines = File.ReadAllLines(filePath);
@@ -1700,7 +2252,13 @@ M30";
                 _playbackLoopService.Reset(new Point3D(MachineState.HOME_X, MachineState.HOME_Y, MachineState.HOME_Z));
                 _tools.Clear();
                 var toolNumbers = _currentParser.Commands.Where(c => c.ToolNumber.HasValue).Select(c => c.ToolNumber!.Value).Distinct().OrderBy(n => n);
-                foreach (var t in toolNumbers) { var tool = new ToolViewModel { Number = t }; tool.PropertyChanged += Tool_PropertyChanged; _tools.Add(tool); }
+                foreach (var t in toolNumbers)
+                {
+                    var tool = new ToolViewModel { Number = t };
+                    tool.FluteColor = ToolPaletteSwatches.NextRandomDistinctFluteColor(_tools.Select(x => x.FluteColor));
+                    tool.PropertyChanged += Tool_PropertyChanged;
+                    _tools.Add(tool);
+                }
                 if (_tools.Count > 0) ToolsList.SelectedIndex = 0;
                 var segmentsWithLines = ToolpathBuilder.BuildWithLineNumbers(_currentParser);
                 double minX = double.MaxValue, maxX = double.MinValue, minY = double.MaxValue, maxY = double.MinValue, minZ = double.MaxValue, maxZ = double.MinValue;
@@ -1717,6 +2275,7 @@ M30";
                     }
                     var visual = CreateVisualForSegment(item.Segment);
                     Viewport.Children.Add(visual);
+                    _toolpathRenderService.TrackVisible(visual);
                     _toolpathVisuals.Add(visual);
                     if (!_lineVisualsMap.ContainsKey(item.LineNumber)) _lineVisualsMap[item.LineNumber] = new List<Visual3D>();
                     _lineVisualsMap[item.LineNumber].Add(visual);
@@ -1766,6 +2325,7 @@ M30";
             _toolpathRenderService.UpdateVisibilityByLine(_lineVisualsMap, Viewport, selectedLine);
             var stateParser = _programStateService.BuildStateAtLine(_currentParser, selectedLine);
             UpdateMachineStateUI(stateParser.State);
+            UpdateProgramProgress();
         }
 
         private void UpdateMachineStateUI(MachineState state)
@@ -1823,7 +2383,16 @@ M30";
             return sb.ToString();
         }
 
-        private void ClearToolpath() { foreach (var v in _toolpathVisuals) Viewport.Children.Remove(v); _toolpathVisuals.Clear(); }
+        private void ClearToolpath()
+        {
+            foreach (var v in _toolpathVisuals)
+            {
+                Viewport.Children.Remove(v);
+            }
+
+            _toolpathVisuals.Clear();
+            _toolpathRenderService.Reset();
+        }
 
         protected override void OnPreviewKeyDown(KeyEventArgs e)
         {

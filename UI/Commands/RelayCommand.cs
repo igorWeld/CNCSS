@@ -3,6 +3,7 @@ using System.Windows.Input;
 
 namespace CNCSS.UI.Commands
 {
+    /// <summary>Простая реализация <see cref="ICommand"/> с делегатом и опциональной проверкой <see cref="CanExecute"/>.</summary>
     public class RelayCommand : ICommand
     {
         private readonly Action<object?> _execute;

@@ -6,6 +6,7 @@ using CNCSS.Vis;
 
 namespace CNCSS.UI.Presenters
 {
+    /// <summary>Обёртка над шагом съёма заготовки и политикой частоты обновления отображения вокселей.</summary>
     public sealed class StockRenderService
     {
         private DateTime _lastStockUpdateTime = DateTime.MinValue;
@@ -24,7 +25,7 @@ namespace CNCSS.UI.Presenters
                 return;
             }
 
-            stockCutWorker?.EnqueueCut(from, to, selectedTool.Diameter / 2.0, selectedTool.FluteLength);
+            stockCutWorker?.EnqueueCut(from, to, selectedTool.Diameter / 2.0, selectedTool.FluteLength, selectedTool.FluteColor);
         }
 
         public bool ShouldRefreshStock(VoxelStock? stock, bool isStockUpdating, int minRefreshIntervalMs)

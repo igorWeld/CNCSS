@@ -9,6 +9,7 @@ namespace CNCSS.Data.Tools
         public const int Size = ProjectConstants.VOXEL_CHUNK_SIZE;
         private const int VoxelCount = Size * Size * Size;
         private readonly ulong[] _data = new ulong[ProjectConstants.VOXEL_DATA_LENGTH];
+        private Dictionary<int, uint>? _removedVoxelColors;
         private int _filledVoxelCount;
 
         public bool IsDirty { get; set; } = true;
@@ -39,7 +40,7 @@ namespace CNCSS.Data.Tools
             return (_data[index >> 6] & (1UL << (index & 63))) != 0;
         }
 
-        public void SetVoxel(int x, int y, int z, bool value)
+        public void SetVoxel(int x, int y, int z, bool value, uint removedByToolColor = 0)
         {
             int index = (x * Size + y) * Size + z;
             int ulongIdx = index >> 6;
@@ -53,16 +54,34 @@ namespace CNCSS.Data.Tools
             {
                 _data[ulongIdx] |= bit;
                 _filledVoxelCount++;
+                _removedVoxelColors?.Remove(index);
             }
             else
             {
                 _data[ulongIdx] &= ~bit;
                 _filledVoxelCount--;
+                if (removedByToolColor != 0)
+                {
+                    _removedVoxelColors ??= new Dictionary<int, uint>();
+                    _removedVoxelColors[index] = removedByToolColor;
+                }
             }
 
             IsDirty = true;
             IsEmpty = _filledVoxelCount <= 0;
             IsFull = _filledVoxelCount >= VoxelCount;
+        }
+
+        public bool TryGetRemovedVoxelColor(int x, int y, int z, out uint color)
+        {
+            color = 0;
+            if (_removedVoxelColors == null)
+            {
+                return false;
+            }
+
+            int index = (x * Size + y) * Size + z;
+            return _removedVoxelColors.TryGetValue(index, out color);
         }
 
         public ulong[] GetData() => _data;

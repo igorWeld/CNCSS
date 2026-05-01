@@ -3,6 +3,7 @@ using CNCSS.Logic;
 
 namespace CNCSS.UI
 {
+    /// <summary>Вспомогательный текстовый вывод в консоль (цвет по типу кадра) для отладки без WPF.</summary>
     public static class ConsoleRenderer
     {
         public static void RenderHeader(string title) => Console.WriteLine($"=== {title} ===\n");

@@ -127,7 +127,9 @@ namespace CNCSS.Logic
             return rEnd > Eps;
         }
 
-        /// <summary>R: знак задаёт дугу ≤180° (R>0) или >180° (R<0); выбирается центр согласно G2/G3.</summary>
+        /// <summary>
+        /// R по модулю — радиус; знак выбирает короткую или длинную дугу окружности, центр согласно G2/G3.
+        /// </summary>
         private static bool TryCenterFromRadius(
             int planeNum,
             double su, double sv,

@@ -1,5 +1,6 @@
 namespace CNCSS.Data.Tools
 {
+    /// <summary>Тип фрезы/сверла для геометрии инструмента и UI библиотеки.</summary>
     public enum ToolType
     {
         EndMill,
@@ -35,7 +36,7 @@ namespace CNCSS.Data.Tools
         int Flutes { get; }
     }
 
-
+    /// <summary>Общие свойства режущего инструмента с разделяемыми полями для сериализации в UI.</summary>
     public abstract class ToolBase : ITool
     {
         public int Number { get; set; }
@@ -55,4 +56,5 @@ namespace CNCSS.Data.Tools
             ShankDiameter = diameter;
             Flutes = 2;
         }
-    }}
+    }
+}

@@ -5,12 +5,21 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>CNCSS</RootNamespace>
     <AssemblyName>CNCSS</AssemblyName>
-    <NoWarn>$(NoWarn);NU1701</NoWarn>
+    <Product>CNCSS</Product>
+    <Description>Симулятор G-кода и воксельного съёма заготовки: WPF, Helix Toolkit.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);NU1701;1591</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="HelixToolkit.Wpf" Version="2.25.0" />
+  </ItemGroup>
+  <!-- Без глобальных Using для Forms/Drawing — иначе конфликты с типами WPF (Color, Application, …). -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms"/>
+    <Using Remove="System.Drawing"/>
   </ItemGroup>
   <ItemGroup>
     <None Update="O0001.nc">

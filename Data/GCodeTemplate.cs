@@ -1,11 +1,13 @@
 namespace CNCSS.Data
 {
+    /// <summary>Модальность G/M-кода станка FANUC-подобного контекста.</summary>
     public enum CommandModality
     {
         NonModal,
         Modal
     }
 
+    /// <summary>Составной ключ кода вида «G1» или «M3» для реестра <see cref="GCodeRegistry"/>.</summary>
     public struct GCodeTemplate : IEquatable<GCodeTemplate>
     {
         public string Letter { get; }

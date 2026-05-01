@@ -3,6 +3,7 @@ using CNCSS.UI.ViewModels;
 
 namespace CNCSS.Vis
 {
+    /// <summary>Контракт обновления 3D-сцены (инструмент, траектория, заготовка) отдельно от WPF-окна.</summary>
     public interface IVisualizer
     {
         void UpdateToolPosition(Point3D position);

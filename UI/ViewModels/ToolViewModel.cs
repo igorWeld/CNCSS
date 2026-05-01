@@ -2,9 +2,11 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using CNCSS.Data.Tools;
+using System.Windows.Media;
 
 namespace CNCSS.UI.ViewModels
 {
+    /// <summary>Редактируемый инструмент в библиотеке приложения: номер T, геометрия и цвет для 3D-превью.</summary>
     public class ToolViewModel : INotifyPropertyChanged
     {
         private int _number;
@@ -15,6 +17,7 @@ namespace CNCSS.UI.ViewModels
         private int _flutes = 2;
         private double _pointAngle = 118.0;
         private ToolType _selectedType = ToolType.EndMill;
+        private Color _fluteColor = Colors.Goldenrod;
 
         public int Number
         {
@@ -61,6 +64,13 @@ namespace CNCSS.UI.ViewModels
         }
 
         public bool IsDrill => SelectedType == ToolType.Drill;
+
+        /// <summary>Цвет режущей части в 3D-превью и на основном виду.</summary>
+        public Color FluteColor
+        {
+            get => _fluteColor;
+            set { _fluteColor = value; OnPropertyChanged(); }
+        }
 
         public ToolType SelectedType
         {

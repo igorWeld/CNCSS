@@ -2,6 +2,9 @@ using CNCSS.Logic;
 
 namespace CNCSS.Simulation.Execution
 {
+    /// <summary>
+    /// Возвращает <see cref="GCodeParser"/>, состояние которого (<see cref="GCodeParser.State"/>) соответствует выполнению УП до заданной строки.
+    /// </summary>
     public sealed class ProgramStateService
     {
         public GCodeParser BuildStateAtLine(GCodeParser sourceParser, int selectedLine)

@@ -1,5 +1,6 @@
 namespace CNCSS.Machine.Model
 {
+    /// <summary>Вид кадра траектории для потока исполнения программы.</summary>
     public enum MotionBlockKind
     {
         Rapid,
@@ -10,6 +11,7 @@ namespace CNCSS.Machine.Model
         Auxiliary
     }
 
+    /// <summary>Логический блок движения/вспомогательной команды, извлечённый из строки G-кода.</summary>
     public sealed class MotionBlock
     {
         public int LineNumber { get; init; }

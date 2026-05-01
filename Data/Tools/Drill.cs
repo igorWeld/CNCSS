@@ -1,5 +1,6 @@
 namespace CNCSS.Data.Tools
 {
+    /// <summary>Сверло с углом при вершине (для параметров в UI и отображения).</summary>
     public class Drill : ToolBase
     {
         public override ToolType Type => ToolType.Drill;

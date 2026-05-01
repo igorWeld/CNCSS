@@ -172,6 +172,9 @@ namespace CNCSS.Data
         /// <param name="x">Новая координата X (опционально).</param>
         /// <param name="y">Новая координата Y (опционально).</param>
         /// <param name="z">Новая координата Z (опционально).</param>
+        /// <param name="a">Ось A в программе (опционально).</param>
+        /// <param name="b">Ось B в программе (опционально).</param>
+        /// <param name="c">Ось C в программе (опционально).</param>
         public void UpdatePosition(double? x, double? y, double? z, double? a = null, double? b = null, double? c = null)
         {
             SavePreviousPosition();

@@ -2,6 +2,7 @@ using CNCSS.Data;
 
 namespace CNCSS.Vis
 {
+    /// <summary>Параметры бюджета воксельной симуляции (шаг съёма, лимиты меша) в зависимости от выбранного разрешения сетки.</summary>
     public readonly record struct VoxelSimulationProfile(
         double ResolutionMm,
         double CutStepMm,

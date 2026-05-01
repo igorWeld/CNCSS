@@ -2,10 +2,14 @@ using System;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using System.Windows.Media;
 using System.Windows.Media.Media3D;
 
 namespace CNCSS.Vis
 {
+    /// <summary>
+    /// Фоновый потребитель очереди съёма: асинхронно вызывает <see cref="VoxelStock"/>, чтобы не блокировать UI-таймер.
+    /// </summary>
     public sealed class StockCutWorker : IDisposable
     {
         private readonly VoxelStock _stock;
@@ -25,9 +29,9 @@ namespace CNCSS.Vis
             _workerTask = Task.Run(WorkerLoop);
         }
 
-        public void EnqueueCut(Point3D start, Point3D end, double radius, double fluteLength)
+        public void EnqueueCut(Point3D start, Point3D end, double radius, double fluteLength, Color toolColor)
         {
-            _channel.Writer.TryWrite(new CutRequest(start, end, radius, fluteLength));
+            _channel.Writer.TryWrite(new CutRequest(start, end, radius, fluteLength, toolColor));
         }
 
         private async Task WorkerLoop()
@@ -53,7 +57,7 @@ namespace CNCSS.Vis
             int steps = (int)Math.Ceiling(length / stepDist);
             if (steps <= 1)
             {
-                _stock.CutCylinder(req.Start, req.End, req.Radius, req.FluteLength);
+                _stock.CutCylinder(req.Start, req.End, req.Radius, req.FluteLength, req.ToolColor);
                 return;
             }
 
@@ -63,7 +67,7 @@ namespace CNCSS.Vis
                 double t1 = i / (double)steps;
                 var s = req.Start + move * t0;
                 var e = req.Start + move * t1;
-                _stock.CutCylinder(s, e, req.Radius, req.FluteLength);
+                _stock.CutCylinder(s, e, req.Radius, req.FluteLength, req.ToolColor);
             }
         }
 
@@ -75,7 +79,7 @@ namespace CNCSS.Vis
             _cts.Dispose();
         }
 
-        private readonly record struct CutRequest(Point3D Start, Point3D End, double Radius, double FluteLength);
+        private readonly record struct CutRequest(Point3D Start, Point3D End, double Radius, double FluteLength, Color ToolColor);
     }
 }
 

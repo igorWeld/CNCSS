@@ -3,6 +3,10 @@ using CNCSS.Simulation.Bus;
 
 namespace CNCSS.Controller.Core
 {
+    /// <summary>
+    /// Реализация <see cref="IControllerCore"/>: публикует команды на <see cref="ISimulationBus"/> и отслеживает
+    /// <see cref="ControllerMode"/> и флаг цикла.
+    /// </summary>
     public sealed class ControllerCore : IControllerCore
     {
         private readonly ISimulationBus _bus;

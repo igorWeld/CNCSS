@@ -1,5 +1,6 @@
 namespace CNCSS.Data.Tools
 {
+    /// <summary>Концевая фреза (цилиндрическая).</summary>
     public class EndMill : ToolBase
     {
         public override ToolType Type => ToolType.EndMill;

@@ -4,6 +4,7 @@ using CNCSS.Logic;
 
 namespace CNCSS.Vis
 {
+    /// <summary>Тип сегмента траектории для раскраски и построения линий.</summary>
     public enum ToolpathSegmentKind
     {
         Rapid,
@@ -11,12 +12,14 @@ namespace CNCSS.Vis
         Arc
     }
 
+    /// <summary>Непрерывный отрезок траектории (G0/G1/дуга) и его полилиния в 3D.</summary>
     public sealed class ToolpathSegment
     {
         public ToolpathSegmentKind Kind { get; init; }
         public Point3D[] Points { get; init; } = Array.Empty<Point3D>();
     }
 
+    /// <summary>Сегмент с привязкой к номеру строки исходного файла УП.</summary>
     public sealed class ToolpathSegmentWithLine
     {
         public ToolpathSegment Segment { get; init; } = null!;

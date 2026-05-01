@@ -3,7 +3,6 @@ using System.Windows.Media.Media3D;
 using System.Windows.Media;
 using CNCSS.Data.Tools;
 using CNCSS.Data;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,6 +14,12 @@ namespace CNCSS.Vis
     /// </summary>
     public class VoxelStock
     {
+        private sealed class ColorMeshAccumulator
+        {
+            public Point3DCollection Positions { get; } = new Point3DCollection();
+            public Int32Collection Indices { get; } = new Int32Collection();
+        }
+
         private readonly VoxelChunk[,,] _chunks;
         private readonly double _resolution;
         private readonly Point3D _min;
@@ -22,9 +27,12 @@ namespace CNCSS.Vis
         private readonly int _chunkCountX, _chunkCountY, _chunkCountZ;
         private readonly ReaderWriterLockSlim _voxelsLock = new ReaderWriterLockSlim();
 
-        private readonly Dictionary<(int, int, int), GeometryModel3D> _chunkModels = new Dictionary<(int, int, int), GeometryModel3D>();
+        private readonly Dictionary<(int, int, int), Model3D> _chunkModels = new Dictionary<(int, int, int), Model3D>();
         private readonly Model3DGroup _modelGroup = new Model3DGroup();
-        private readonly DiffuseMaterial _material = new DiffuseMaterial(Brushes.Gray);
+        private const int ChunkMaskLength = VoxelChunk.Size * VoxelChunk.Size;
+        private const uint DefaultSurfaceColor = 0xFF808080;
+        [ThreadStatic] private static bool[]? s_chunkMask;
+        [ThreadStatic] private static uint[]? s_chunkColorMask;
 
         public Model3D MainModel => _modelGroup;
         public bool IsDirty { get; set; } = true;
@@ -51,8 +59,9 @@ namespace CNCSS.Vis
             IsDirty = true;
         }
 
-        public void CutCylinder(Point3D start, Point3D end, double radius, double fluteLength)
+        public void CutCylinder(Point3D start, Point3D end, double radius, double fluteLength, Color toolColor)
         {
+            uint toolColorPacked = PackColor(toolColor);
             _voxelsLock.EnterWriteLock();
             try
             {
@@ -64,19 +73,23 @@ namespace CNCSS.Vis
             int maxX = Math.Min(_sizeX - 1, (int)((Math.Max(start.X, end.X) + radius - _min.X) / _resolution));
             int minY = Math.Max(0, (int)((Math.Min(start.Y, end.Y) - radius - _min.Y) / _resolution));
             int maxY = Math.Min(_sizeY - 1, (int)((Math.Max(start.Y, end.Y) + radius - _min.Y) / _resolution));
+            int minZ = Math.Max(0, (int)((Math.Min(start.Z, end.Z) - _min.Z) / _resolution));
+            int maxZ = Math.Min(_sizeZ - 1, (int)((Math.Max(start.Z, end.Z) + fluteLength - _min.Z) / _resolution));
 
             int minCX = Math.Max(0, minX / VoxelChunk.Size);
             int maxCX = Math.Min(_chunkCountX - 1, maxX / VoxelChunk.Size);
             int minCY = Math.Max(0, minY / VoxelChunk.Size);
             int maxCY = Math.Min(_chunkCountY - 1, maxY / VoxelChunk.Size);
+            int minCZ = Math.Max(0, minZ / VoxelChunk.Size);
+            int maxCZ = Math.Min(_chunkCountZ - 1, maxZ / VoxelChunk.Size);
 
-            if (minCX > maxCX || minCY > maxCY) return;
+            if (minCX > maxCX || minCY > maxCY || minCZ > maxCZ) return;
 
             Parallel.For(minCX, maxCX + 1, cx =>
             {
                 for (int cy = minCY; cy <= maxCY; cy++)
                 {
-                    for (int cz = 0; cz < _chunkCountZ; cz++)
+                    for (int cz = minCZ; cz <= maxCZ; cz++)
                     {
                         var chunk = _chunks[cx, cy, cz];
                         if (chunk == null || chunk.IsEmpty) continue;
@@ -85,13 +98,6 @@ namespace CNCSS.Vis
                         int xStart = cx * VoxelChunk.Size;
                         int yStart = cy * VoxelChunk.Size;
                         int zStartChunk = cz * VoxelChunk.Size;
-
-                        // Быстрая проверка: пересекает ли цилиндр этот чанк по вертикали
-                        double chunkMinZ = _min.Z + zStartChunk * _resolution;
-                        double chunkMaxZ = chunkMinZ + VoxelChunk.Size * _resolution;
-                        
-                        // Находим диапазон Z для текущего прохода в этом чанке
-                        // (упрощенная проверка, чтобы не заходить в циклы, если инструмент выше или ниже чанка)
 
                         for (int lx = 0; lx < VoxelChunk.Size; lx++)
                         {
@@ -123,7 +129,7 @@ namespace CNCSS.Vis
                                         // Оптимизация: проверяем наличие вокселя перед записью
                                         if (chunk.GetVoxel(lx, ly, lz))
                                         {
-                                            chunk.SetVoxel(lx, ly, lz, false);
+                                            chunk.SetVoxel(lx, ly, lz, false, toolColorPacked);
                                             chunkModified = true;
                                         }
                                     }
@@ -168,34 +174,36 @@ namespace CNCSS.Vis
 
                 if (dirty.Count > 0)
                 {
-                    var results = new ConcurrentBag<(int cx, int cy, int cz, MeshGeometry3D? mesh)>();
+                    var results = new (int cx, int cy, int cz, List<(uint color, MeshGeometry3D mesh)>? meshes)[dirty.Count];
 
                     await Task.Run(() =>
                     {
-                        Parallel.ForEach(
-                            dirty,
+                        Parallel.For(
+                            0,
+                            dirty.Count,
                             new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) },
-                            item =>
+                            i =>
                             {
+                                var item = dirty[i];
                                 if (item.isEmpty)
                                 {
-                                    results.Add((item.cx, item.cy, item.cz, null));
+                                    results[i] = (item.cx, item.cy, item.cz, null);
                                     return;
                                 }
 
-                                var mesh = CreateChunkMesh(item.cx, item.cy, item.cz);
-                                results.Add((item.cx, item.cy, item.cz, mesh));
+                                var meshes = CreateChunkMeshes(item.cx, item.cy, item.cz);
+                                results[i] = (item.cx, item.cy, item.cz, meshes);
                             });
                     });
 
                     // Оптимизация: Накапливаем изменения для пакетного обновления UI
-                    var toRemove = new List<GeometryModel3D>();
-                    var toAdd = new List<GeometryModel3D>();
+                    var toRemove = new List<Model3D>();
+                    var toAdd = new List<Model3D>();
 
-                    foreach (var (cx, cy, cz, mesh) in results)
+                    foreach (var (cx, cy, cz, meshes) in results)
                     {
                         var key = (cx, cy, cz);
-                        if (mesh == null)
+                        if (meshes == null || meshes.Count == 0)
                         {
                             if (_chunkModels.TryGetValue(key, out var model))
                             {
@@ -205,17 +213,24 @@ namespace CNCSS.Vis
                         }
                         else
                         {
+                            var modelGroup = new Model3DGroup();
+                            foreach (var (color, mesh) in meshes)
+                            {
+                                var material = BuildMaterial(color);
+                                var part = new GeometryModel3D(mesh, material)
+                                {
+                                    BackMaterial = material
+                                };
+                                modelGroup.Children.Add(part);
+                            }
+
                             if (_chunkModels.TryGetValue(key, out var existingModel))
                             {
-                                existingModel.Geometry = mesh;
+                                toRemove.Add(existingModel);
                             }
-                            else
-                            {
-                                var newModel = new GeometryModel3D(mesh, _material);
-                                newModel.BackMaterial = _material;
-                                _chunkModels[key] = newModel;
-                                toAdd.Add(newModel);
-                            }
+
+                            _chunkModels[key] = modelGroup;
+                            toAdd.Add(modelGroup);
                         }
                     }
 
@@ -235,14 +250,12 @@ namespace CNCSS.Vis
 
         private bool _isUpdating = false;
 
-        private MeshGeometry3D CreateChunkMesh(int cx, int cy, int cz)
+        private List<(uint color, MeshGeometry3D mesh)> CreateChunkMeshes(int cx, int cy, int cz)
         {
             _voxelsLock.EnterReadLock();
             try
             {
-            var mesh = new MeshGeometry3D();
-            var positions = new Point3DCollection();
-            var indices = new Int32Collection();
+            var accumulators = new Dictionary<uint, ColorMeshAccumulator>();
             double res = _resolution;
 
             int xBase = cx * VoxelChunk.Size;
@@ -259,7 +272,10 @@ namespace CNCSS.Vis
                     int gi = (axis == 0 ? xBase : axis == 1 ? yBase : zBase) + i;
                     if (gi < 0 || gi >= (axis == 0 ? _sizeX : axis == 1 ? _sizeY : _sizeZ)) continue;
 
-                    bool[,] mask = new bool[VoxelChunk.Size, VoxelChunk.Size];
+                    bool[] mask = s_chunkMask ??= new bool[ChunkMaskLength];
+                    uint[] colorMask = s_chunkColorMask ??= new uint[ChunkMaskLength];
+                    Array.Clear(mask, 0, mask.Length);
+                    Array.Clear(colorMask, 0, colorMask.Length);
                     bool hasAny = false;
 
                     for (int v = 0; v < VoxelChunk.Size; v++)
@@ -282,7 +298,9 @@ namespace CNCSS.Vis
 
                                 if (!IsVoxelPresent(nx, ny, nz))
                                 {
-                                    mask[u, v] = true;
+                                    uint faceColor = GetFaceColor(gx, gy, gz, nx, ny, nz);
+                                    mask[u + v * VoxelChunk.Size] = true;
+                                    colorMask[u + v * VoxelChunk.Size] = faceColor;
                                     hasAny = true;
                                 }
                             }
@@ -295,37 +313,65 @@ namespace CNCSS.Vis
                     {
                         for (int u = 0; u < VoxelChunk.Size; u++)
                         {
-                            if (mask[u, v])
+                            if (mask[u + v * VoxelChunk.Size])
                             {
+                                uint currentColor = colorMask[u + v * VoxelChunk.Size];
                                 int w, h;
-                                for (w = 1; u + w < VoxelChunk.Size && mask[u + w, v]; w++) ;
+                                for (w = 1; u + w < VoxelChunk.Size; w++)
+                                {
+                                    int idx = u + w + v * VoxelChunk.Size;
+                                    if (!mask[idx] || colorMask[idx] != currentColor)
+                                    {
+                                        break;
+                                    }
+                                }
                                 bool done = false;
                                 for (h = 1; v + h < VoxelChunk.Size; h++)
                                 {
                                     for (int k = 0; k < w; k++)
                                     {
-                                        if (!mask[u + k, v + h]) { done = true; break; }
+                                        int idx = u + k + (v + h) * VoxelChunk.Size;
+                                        if (!mask[idx] || colorMask[idx] != currentColor) { done = true; break; }
                                     }
                                     if (done) break;
                                 }
 
                                 int faceU = (axis == 0 ? yBase : xBase) + u;
                                 int faceV = (axis == 2 ? yBase : zBase) + v;
-                                AddGreedyFace(positions, indices, axis, positive, gi, faceU, faceV, w, h);
+                                if (!accumulators.TryGetValue(currentColor, out var acc))
+                                {
+                                    acc = new ColorMeshAccumulator();
+                                    accumulators[currentColor] = acc;
+                                }
+
+                                AddGreedyFace(acc.Positions, acc.Indices, axis, positive, gi, faceU, faceV, w, h);
 
                                 for (int l = 0; l < h; l++)
                                     for (int k = 0; k < w; k++)
-                                        mask[u + k, v + l] = false;
+                                    {
+                                        int idx = u + k + (v + l) * VoxelChunk.Size;
+                                        mask[idx] = false;
+                                        colorMask[idx] = 0;
+                                    }
                             }
                         }
                     }
                 }
             }
 
-            mesh.Positions = positions;
-            mesh.TriangleIndices = indices;
-            mesh.Freeze();
-            return mesh;
+            var result = new List<(uint color, MeshGeometry3D mesh)>(accumulators.Count);
+            foreach (var pair in accumulators)
+            {
+                var mesh = new MeshGeometry3D
+                {
+                    Positions = pair.Value.Positions,
+                    TriangleIndices = pair.Value.Indices
+                };
+                mesh.Freeze();
+                result.Add((pair.Key, mesh));
+            }
+
+            return result;
             }
             finally
             {
@@ -383,6 +429,53 @@ namespace CNCSS.Vis
             int cy = y >> 5;
             int cz = z >> 5;
             return _chunks[cx, cy, cz].GetVoxel(x & 31, y & 31, z & 31);
+        }
+
+        private bool TryGetRemovedVoxelColor(int x, int y, int z, out uint color)
+        {
+            color = 0;
+            if (x < 0 || x >= _sizeX || y < 0 || y >= _sizeY || z < 0 || z >= _sizeZ)
+            {
+                return false;
+            }
+
+            int cx = x >> 5;
+            int cy = y >> 5;
+            int cz = z >> 5;
+            return _chunks[cx, cy, cz].TryGetRemovedVoxelColor(x & 31, y & 31, z & 31, out color);
+        }
+
+        private uint GetFaceColor(int x, int y, int z, int nx, int ny, int nz)
+        {
+            if (TryGetRemovedVoxelColor(nx, ny, nz, out uint color))
+            {
+                return color;
+            }
+
+            return DefaultSurfaceColor;
+        }
+
+        private static uint PackColor(Color color)
+        {
+            return ((uint)color.A << 24) | ((uint)color.R << 16) | ((uint)color.G << 8) | color.B;
+        }
+
+        private static Color UnpackColor(uint packed)
+        {
+            byte a = (byte)((packed >> 24) & 0xFF);
+            byte r = (byte)((packed >> 16) & 0xFF);
+            byte g = (byte)((packed >> 8) & 0xFF);
+            byte b = (byte)(packed & 0xFF);
+            return Color.FromArgb(a, r, g, b);
+        }
+
+        private static DiffuseMaterial BuildMaterial(uint packedColor)
+        {
+            var brush = new SolidColorBrush(UnpackColor(packedColor));
+            brush.Freeze();
+            var material = new DiffuseMaterial(brush);
+            material.Freeze();
+            return material;
         }
     }
 }

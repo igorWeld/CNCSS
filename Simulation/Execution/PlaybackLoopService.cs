@@ -3,6 +3,7 @@ using CNCSS.Data;
 
 namespace CNCSS.Simulation.Execution
 {
+    /// <summary>Действие после тика воспроизведения (продолжить, остановить программу, пауза по опции и т.д.).</summary>
     public enum PlaybackLoopAction
     {
         None,
@@ -11,16 +12,20 @@ namespace CNCSS.Simulation.Execution
         PauseForSingleBlock
     }
 
+    /// <summary>Результат одного вызова такта цикла воспроизведения: индекс строки, интервал таймера, прогресс интерполяции.</summary>
     public sealed class PlaybackLoopResult
     {
         public PlaybackLoopAction Action { get; init; } = PlaybackLoopAction.None;
+        public int? EndProgramMCode { get; init; }
+        public bool RewindToStart { get; init; }
         public bool HasIndexUpdate { get; init; }
         public int NewIndex { get; init; }
         public int TimerIntervalMs { get; init; } = 10;
-    public double Progress { get; init; } = 1.0;
+        public double Progress { get; init; } = 1.0;
         public Point3D CurrentPosition { get; init; }
     }
 
+    /// <summary>Связывает интерполяцию движения с <see cref="ProgramExecutionService"/> и публикует переходы между кадрами УП.</summary>
     public sealed class PlaybackLoopService
     {
         private readonly ProgramExecutionService _programExecutionService;
@@ -53,6 +58,7 @@ namespace CNCSS.Simulation.Execution
         public PlaybackLoopResult Tick(
             bool machineIsRunning,
             Point3D lastPosition,
+            int currentLineIndex,
             Func<MachineState, double> speedResolver,
             double simulationMultiplier,
             double fpsSlowdownFactor)
@@ -75,6 +81,8 @@ namespace CNCSS.Simulation.Execution
                     return new PlaybackLoopResult
                     {
                         Action = PlaybackLoopAction.StopProgram,
+                        EndProgramMCode = decision.EndProgramMCode,
+                        RewindToStart = decision.RewindToStart,
                         CurrentPosition = lastPosition,
                         Progress = _progress
                     };
@@ -85,7 +93,7 @@ namespace CNCSS.Simulation.Execution
                     return new PlaybackLoopResult
                     {
                         Action = PlaybackLoopAction.PauseForOptionalStop,
-                        HasIndexUpdate = true,
+                        HasIndexUpdate = currentLineIndex != decision.NextIndex,
                         NewIndex = decision.NextIndex,
                         CurrentPosition = lastPosition,
                         Progress = _progress
@@ -99,7 +107,7 @@ namespace CNCSS.Simulation.Execution
                     var init = InterpolationService.InitializeSegment(_start, _target);
                     _progress = init.progress;
                     intervalMs = init.intervalMs;
-                    hasIndexUpdate = newIndex != decision.NextIndex;
+                    hasIndexUpdate = currentLineIndex != decision.NextIndex;
                     newIndex = decision.NextIndex;
                     _currentArc = _programExecutionService.GetCurrentCommand()?.Arc;
                 }

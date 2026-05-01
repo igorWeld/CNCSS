@@ -1,13 +1,16 @@
 using System.Collections.ObjectModel;
+using System.Linq;
 using System.Windows.Controls;
 using System.Windows.Media.Media3D;
 using CNCSS.Data;
+using CNCSS.UI.Dialogs;
 using CNCSS.UI.FanucPanel;
 using CNCSS.UI.ViewModels;
 using HelixToolkit.Wpf;
 
 namespace CNCSS.UI.Presenters
 {
+    /// <summary>Синхронизация текстовых полей FANUC-панели и списка инструментов с данными симулятора.</summary>
     public sealed class UiRenderService
     {
         public void ApplyRuntimeStatus(
@@ -55,6 +58,7 @@ namespace CNCSS.UI.Presenters
                 if (toolVm == null)
                 {
                     toolVm = new ToolViewModel { Number = toolNumber.Value };
+                    toolVm.FluteColor = ToolPaletteSwatches.NextRandomDistinctFluteColor(tools.Select(t => t.FluteColor));
                     onToolCreated(toolVm);
                     tools.Add(toolVm);
                 }
