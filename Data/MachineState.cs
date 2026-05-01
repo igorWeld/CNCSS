@@ -6,6 +6,21 @@ namespace CNCSS.Data
     /// </summary>
     public class MachineState
     {
+        public const int MinWorkOffsetNumber = 54;
+        public const int MaxWorkOffsetNumber = 59;
+
+        public sealed class WorkOffset
+        {
+            public double X { get; set; }
+            public double Y { get; set; }
+            public double Z { get; set; }
+
+            public WorkOffset Clone()
+            {
+                return new WorkOffset { X = X, Y = Y, Z = Z };
+            }
+        }
+
         // Константы домашней позиции (Home)
         public const double HOME_X = ProjectConstants.DEFAULT_HOME_X;
         public const double HOME_Y = ProjectConstants.DEFAULT_HOME_Y;
@@ -90,6 +105,7 @@ namespace CNCSS.Data
         public int? ToolNumber { get; set; }
         public int? ToolLengthOffset { get; set; }
         public int? ToolRadiusOffset { get; set; }
+        public Dictionary<int, WorkOffset> WorkOffsets { get; } = new();
 
         public MachineState() => Reset();
 
@@ -132,6 +148,7 @@ namespace CNCSS.Data
             ToolNumber = null;
             ToolLengthOffset = null;
             ToolRadiusOffset = null;
+            ResetWorkOffsets();
         }
 
         /// <summary>
@@ -159,9 +176,11 @@ namespace CNCSS.Data
         {
             SavePreviousPosition();
 
-            if (x.HasValue) X = IsAbsolute ? x.Value : X + x.Value;
-            if (y.HasValue) Y = IsAbsolute ? y.Value : Y + y.Value;
-            if (z.HasValue) Z = IsAbsolute ? z.Value : Z + z.Value;
+            var activeOffset = GetActiveWorkOffset();
+
+            if (x.HasValue) X = IsAbsolute ? x.Value + activeOffset.X : X + x.Value;
+            if (y.HasValue) Y = IsAbsolute ? y.Value + activeOffset.Y : Y + y.Value;
+            if (z.HasValue) Z = IsAbsolute ? z.Value + activeOffset.Z : Z + z.Value;
             if (a.HasValue) A = IsAbsolute ? a.Value : A + a.Value;
             if (b.HasValue) B = IsAbsolute ? b.Value : B + b.Value;
             if (c.HasValue) C = IsAbsolute ? c.Value : C + c.Value;
@@ -192,6 +211,42 @@ namespace CNCSS.Data
         {
             if (system.Letter == GCodeRegistry.LETTER_G && system.Number is >= 54 and <= 59)
                 CurrentCoordinateSystem = system;
+        }
+
+        public WorkOffset GetActiveWorkOffset()
+        {
+            int systemNumber = CurrentCoordinateSystem.Number;
+            if (!WorkOffsets.TryGetValue(systemNumber, out var offset))
+            {
+                offset = new WorkOffset();
+                WorkOffsets[systemNumber] = offset;
+            }
+
+            return offset;
+        }
+
+        public WorkOffset GetWorkOffset(int systemNumber)
+        {
+            if (systemNumber < MinWorkOffsetNumber || systemNumber > MaxWorkOffsetNumber)
+            {
+                throw new ArgumentOutOfRangeException(nameof(systemNumber), $"Expected G{MinWorkOffsetNumber}..G{MaxWorkOffsetNumber}");
+            }
+
+            if (!WorkOffsets.TryGetValue(systemNumber, out var offset))
+            {
+                offset = new WorkOffset();
+                WorkOffsets[systemNumber] = offset;
+            }
+
+            return offset;
+        }
+
+        public void SetWorkOffset(int systemNumber, double? x = null, double? y = null, double? z = null)
+        {
+            var target = GetWorkOffset(systemNumber);
+            if (x.HasValue) target.X = x.Value;
+            if (y.HasValue) target.Y = y.Value;
+            if (z.HasValue) target.Z = z.Value;
         }
 
         /// <summary>Устанавливает активную плоскость интерполяции (G17-G19).</summary>
@@ -279,7 +334,7 @@ namespace CNCSS.Data
         /// <summary>Создает полную копию текущего состояния станка.</summary>
         public MachineState Clone()
         {
-            return new MachineState
+            var clone = new MachineState
             {
                 IsAbsolute = this.IsAbsolute,
                 IsMetric = this.IsMetric,
@@ -310,6 +365,22 @@ namespace CNCSS.Data
                 ToolLengthOffset = this.ToolLengthOffset,
                 ToolRadiusOffset = this.ToolRadiusOffset
             };
+
+            foreach (var pair in WorkOffsets)
+            {
+                clone.WorkOffsets[pair.Key] = pair.Value.Clone();
+            }
+
+            return clone;
+        }
+
+        private void ResetWorkOffsets()
+        {
+            WorkOffsets.Clear();
+            for (int i = MinWorkOffsetNumber; i <= MaxWorkOffsetNumber; i++)
+            {
+                WorkOffsets[i] = new WorkOffset();
+            }
         }
 }
 }

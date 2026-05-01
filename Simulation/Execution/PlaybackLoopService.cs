@@ -1,0 +1,146 @@
+using System.Windows.Media.Media3D;
+using CNCSS.Data;
+
+namespace CNCSS.Simulation.Execution
+{
+    public enum PlaybackLoopAction
+    {
+        None,
+        StopProgram,
+        PauseForOptionalStop,
+        PauseForSingleBlock
+    }
+
+    public sealed class PlaybackLoopResult
+    {
+        public PlaybackLoopAction Action { get; init; } = PlaybackLoopAction.None;
+        public bool HasIndexUpdate { get; init; }
+        public int NewIndex { get; init; }
+        public int TimerIntervalMs { get; init; } = 10;
+    public double Progress { get; init; } = 1.0;
+        public Point3D CurrentPosition { get; init; }
+    }
+
+    public sealed class PlaybackLoopService
+    {
+        private readonly ProgramExecutionService _programExecutionService;
+        private Point3D _start;
+        private Point3D _target;
+        private double _progress = 1.0;
+        private ArcGeometry? _currentArc;
+
+        public PlaybackLoopService(ProgramExecutionService programExecutionService)
+        {
+            _programExecutionService = programExecutionService;
+        }
+
+        public void Reset(Point3D homePosition)
+        {
+            _start = homePosition;
+            _target = homePosition;
+            _progress = 1.0;
+            _currentArc = null;
+        }
+
+        public void BeginSegmentFrom(Point3D from)
+        {
+            _start = from;
+            _target = from;
+            _progress = 1.0;
+            _currentArc = null;
+        }
+
+        public PlaybackLoopResult Tick(
+            bool machineIsRunning,
+            Point3D lastPosition,
+            Func<MachineState, double> speedResolver,
+            double simulationMultiplier,
+            double fpsSlowdownFactor)
+        {
+            if (!machineIsRunning)
+            {
+                return new PlaybackLoopResult { CurrentPosition = lastPosition, Progress = _progress };
+            }
+
+            int intervalMs = 10;
+            bool hasIndexUpdate = false;
+            int newIndex = -1;
+
+            if (_progress >= 1.0)
+            {
+                var decision = _programExecutionService.GetNextMoveDecision(lastPosition.X, lastPosition.Y, lastPosition.Z);
+
+                if (decision.EndOfProgram)
+                {
+                    return new PlaybackLoopResult
+                    {
+                        Action = PlaybackLoopAction.StopProgram,
+                        CurrentPosition = lastPosition,
+                        Progress = _progress
+                    };
+                }
+
+                if (decision.StopForOptional)
+                {
+                    return new PlaybackLoopResult
+                    {
+                        Action = PlaybackLoopAction.PauseForOptionalStop,
+                        HasIndexUpdate = true,
+                        NewIndex = decision.NextIndex,
+                        CurrentPosition = lastPosition,
+                        Progress = _progress
+                    };
+                }
+
+                if (decision.HasMove)
+                {
+                    _start = lastPosition;
+                    _target = new Point3D(decision.TargetX, decision.TargetY, decision.TargetZ);
+                    var init = InterpolationService.InitializeSegment(_start, _target);
+                    _progress = init.progress;
+                    intervalMs = init.intervalMs;
+                    hasIndexUpdate = newIndex != decision.NextIndex;
+                    newIndex = decision.NextIndex;
+                    _currentArc = _programExecutionService.GetCurrentCommand()?.Arc;
+                }
+            }
+
+            if (_progress < 1.0)
+            {
+                var cmd = _programExecutionService.GetCurrentCommand();
+                double speedMmPerSec = cmd != null ? speedResolver(cmd.EndState) : 10.0;
+                _progress = InterpolationService.AdvanceProgress(
+                    _progress,
+                    _start,
+                    _target,
+                    speedMmPerSec,
+                    simulationMultiplier,
+                    fpsSlowdownFactor);
+            }
+
+            Point3D currentPos = InterpolationService.ComputePosition(_start, _target, _progress, _currentArc);
+
+            if (_programExecutionService.ShouldHoldForSingleBlock(_progress))
+            {
+                return new PlaybackLoopResult
+                {
+                    Action = PlaybackLoopAction.PauseForSingleBlock,
+                    HasIndexUpdate = hasIndexUpdate,
+                    NewIndex = newIndex,
+                    TimerIntervalMs = intervalMs,
+                    CurrentPosition = currentPos,
+                    Progress = _progress
+                };
+            }
+
+            return new PlaybackLoopResult
+            {
+                HasIndexUpdate = hasIndexUpdate,
+                NewIndex = newIndex,
+                TimerIntervalMs = intervalMs,
+                CurrentPosition = currentPos,
+                Progress = _progress
+            };
+        }
+    }
+}

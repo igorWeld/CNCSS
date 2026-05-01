@@ -182,6 +182,11 @@ namespace CNCSS.Logic
             foreach (var mCode in command.MCodes)
                 ApplyMCode(mCode.Number, command);
 
+            if (TryApplyWorkOffsetCommand(command, parameters))
+            {
+                return;
+            }
+
             if (parameters.ContainsKey(GCodeRegistry.PARAM_F))
             {
                 State.SetFeedRate(parameters[GCodeRegistry.PARAM_F]);
@@ -219,19 +224,19 @@ namespace CNCSS.Logic
 
             if (parameters.ContainsKey(GCodeRegistry.PARAM_X))
             {
-                newX = State.IsAbsolute ? parameters[GCodeRegistry.PARAM_X] : State.X + parameters[GCodeRegistry.PARAM_X];
+                newX = ResolveAxisTarget(parameters[GCodeRegistry.PARAM_X], State.X, State.GetActiveWorkOffset().X);
                 command.X = parameters[GCodeRegistry.PARAM_X];
             }
 
             if (parameters.ContainsKey(GCodeRegistry.PARAM_Y))
             {
-                newY = State.IsAbsolute ? parameters[GCodeRegistry.PARAM_Y] : State.Y + parameters[GCodeRegistry.PARAM_Y];
+                newY = ResolveAxisTarget(parameters[GCodeRegistry.PARAM_Y], State.Y, State.GetActiveWorkOffset().Y);
                 command.Y = parameters[GCodeRegistry.PARAM_Y];
             }
 
             if (parameters.ContainsKey(GCodeRegistry.PARAM_Z))
             {
-                newZ = State.IsAbsolute ? parameters[GCodeRegistry.PARAM_Z] : State.Z + parameters[GCodeRegistry.PARAM_Z];
+                newZ = ResolveAxisTarget(parameters[GCodeRegistry.PARAM_Z], State.Z, State.GetActiveWorkOffset().Z);
                 command.Z = parameters[GCodeRegistry.PARAM_Z];
             }
 
@@ -284,6 +289,43 @@ namespace CNCSS.Logic
 
             string log = $"L{command.LineNumber}: {command.RawLine} -> X{newX:F3} Y{newY:F3} Z{newZ:F3} (ABS: {State.IsAbsolute})";
             System.Console.WriteLine(log);
+        }
+
+        private bool TryApplyWorkOffsetCommand(ParsedCommand command, Dictionary<string, double> parameters)
+        {
+            bool hasG10 = command.GCodes.Any(g => g.Number == 10);
+            if (!hasG10)
+            {
+                return false;
+            }
+
+            if (!parameters.TryGetValue("L", out var lValue) || Math.Abs(lValue - 2.0) > 0.0001)
+            {
+                return false;
+            }
+
+            if (!parameters.TryGetValue(GCodeRegistry.PARAM_P, out var pValue))
+            {
+                return false;
+            }
+
+            int pNumber = (int)pValue;
+            if (pNumber < 1 || pNumber > 6)
+            {
+                return false;
+            }
+
+            int systemNumber = 53 + pNumber;
+            double? x = parameters.TryGetValue(GCodeRegistry.PARAM_X, out var px) ? px : null;
+            double? y = parameters.TryGetValue(GCodeRegistry.PARAM_Y, out var py) ? py : null;
+            double? z = parameters.TryGetValue(GCodeRegistry.PARAM_Z, out var pz) ? pz : null;
+            State.SetWorkOffset(systemNumber, x, y, z);
+            return true;
+        }
+
+        private double ResolveAxisTarget(double axisValue, double currentMachineAxis, double activeWorkOffset)
+        {
+            return State.IsAbsolute ? axisValue + activeWorkOffset : currentMachineAxis + axisValue;
         }
 
         /// <summary>Обрабатывает G-коды и обновляет модальные группы состояния станка.</summary>

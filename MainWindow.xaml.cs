@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -18,6 +18,13 @@ using CNCSS.Logic;
 using CNCSS.Vis;
 using CNCSS.Data;
 using CNCSS.UI.ViewModels;
+using CNCSS.Controller.Core;
+using CNCSS.Machine.Core;
+using CNCSS.Simulation.Bus;
+using CNCSS.Simulation.Execution;
+using CNCSS.UI.FanucPanel;
+using CNCSS.UI.Presenters;
+using System.Diagnostics;
 
 namespace CNCSS
 {
@@ -31,9 +38,6 @@ namespace CNCSS
         private System.Windows.Threading.DispatcherTimer _animationTimer;
         private Point3D _lastPosition = new Point3D(MachineState.HOME_X, MachineState.HOME_Y, MachineState.HOME_Z);
         private double _interpolationProgress = 1.0;
-        private Point3D _startInterpolationPos;
-        private Point3D _targetInterpolationPos;
-        private DateTime _lastStockUpdateTime = DateTime.MinValue;
         private bool _isStockUpdating = false;
 
         private VoxelStock? _stock;
@@ -45,6 +49,44 @@ namespace CNCSS
         private ModelVisual3D _toolVisual = new();
         private readonly GeometryModel3D _fluteModel = new();
         private readonly GeometryModel3D _shankModel = new();
+        private readonly ISimulationBus _simulationBus;
+        private readonly IControllerCore _controllerCore;
+        private readonly IMachineCore _machineCore;
+        private readonly IDisposable _machineStateSubscription;
+        private readonly IDisposable _alarmSubscription;
+        private readonly IDisposable _mdiModeSubscription;
+        private readonly IDisposable _programLineSubscription;
+        private readonly IDisposable _workOffsetsSubscription;
+        private readonly ProgramExecutionService _programExecutionService;
+        private readonly ProgramStateService _programStateService = new();
+        private readonly PlaybackLoopService _playbackLoopService;
+        private readonly UiRenderService _uiRenderService = new();
+        private readonly StockRenderService _stockRenderService = new();
+        private readonly ToolpathRenderService _toolpathRenderService = new();
+        private static readonly bool EnableLegacyUiControls = false;
+        private string _currentControllerMode = "MEM";
+        private bool _isControllerRunning;
+        private string _lastInterlockCode = "OK";
+        private string _lastInterlockDetail = "-";
+        private string _currentMdiMode = "G90";
+        private string _currentCoordSystem = "G54";
+        private string _systemUnitsText = "MM (G21)";
+        private string _systemCoordModeText = "ABS (G90)";
+        private string _systemPlaneText = "G17 (XY)";
+        private string _systemMotionText = "G0";
+        private string _systemCompText = "LEN G49 RAD G40";
+        private double _currentOffsetX;
+        private double _currentOffsetY;
+        private double _currentOffsetZ;
+        private readonly Dictionary<int, (double X, double Y, double Z)> _workOffsets = new();
+        private int _selectedOffsetSystem = 54;
+        private string _lastMdiCommand = "-";
+        private string _lastMdiStatus = "-";
+        private bool _isSingleBlockEnabled;
+        private bool _isOptionalStopEnabled;
+        private bool _isDryRunEnabled;
+        private bool _suppressSelectionSideEffects;
+        private string? _loadedNcProgramPath;
 
         private const double RES_HIGH = ProjectConstants.RES_HIGH;
         private const double RES_MEDIUM = ProjectConstants.RES_MEDIUM;
@@ -56,6 +98,16 @@ namespace CNCSS
         private int _frameCount = 0;
         private DateTime _lastFpsUpdate = DateTime.Now;
         private double _fpsSlowdownFactor = 1.0; // Коэффициент замедления при низком FPS
+        private bool _isFanucDragging;
+        private Point _fanucDragStart;
+        private double _fanucStartLeft;
+        private double _fanucStartTop;
+        private bool _isFanucMinimized;
+        private readonly System.Windows.Threading.DispatcherTimer _fanucClockTimer = new();
+        private readonly Stopwatch _runTimeStopwatch = new();
+        private readonly Stopwatch _cycleTimeStopwatch = new();
+        private TimeSpan _accumulatedRunTime = TimeSpan.Zero;
+        private TimeSpan _accumulatedCycleTime = TimeSpan.Zero;
 
         public MainWindow()
         {
@@ -64,17 +116,511 @@ namespace CNCSS
             CompositionTarget.Rendering += OnRendering;
             ToolsList.ItemsSource = _tools;
 
+            _simulationBus = new SimulationBus();
+            _controllerCore = new ControllerCore(_simulationBus);
+            _machineCore = new MachineCore(_simulationBus);
+            _programExecutionService = new ProgramExecutionService(_simulationBus);
+            _playbackLoopService = new PlaybackLoopService(_programExecutionService);
+            _machineStateSubscription = _simulationBus.Subscribe<MachineStateChangedEvent>(OnMachineStateChanged);
+            _alarmSubscription = _simulationBus.Subscribe<AlarmRaisedEvent>(OnAlarmRaised);
+            _mdiModeSubscription = _simulationBus.Subscribe<MdiModeChangedEvent>(OnMdiModeChanged);
+            _programLineSubscription = _simulationBus.Subscribe<ProgramLineExecutedEvent>(OnProgramLineExecuted);
+            _workOffsetsSubscription = _simulationBus.Subscribe<WorkOffsetsChangedEvent>(OnWorkOffsetsChanged);
+            FanucPanel.CycleStartRequested += OnFanucCycleStartRequested;
+            FanucPanel.FeedHoldRequested += OnFanucFeedHoldRequested;
+            FanucPanel.ResetRequested += OnFanucResetRequested;
+            FanucPanel.ModeChangedRequested += OnFanucModeChangedRequested;
+            FanucPanel.JogRequested += OnFanucJogRequested;
+            FanucPanel.MdiExecuteRequested += OnFanucMdiExecuteRequested;
+            FanucPanel.ProgDirectoryCreateAndOpenRequested += OnFanucProgDirectoryCreateAndOpenRequested;
+            FanucPanel.ProgOpenByNameRequested += OnFanucProgOpenByNameRequested;
+            FanucPanel.ProgDeleteProgramByNameRequested += OnFanucProgDeleteProgramByNameRequested;
+            FanucPanel.SingleBlockChangedRequested += OnFanucSingleBlockChangedRequested;
+            FanucPanel.OptionalStopChangedRequested += OnFanucOptionalStopChangedRequested;
+            FanucPanel.DryRunChangedRequested += OnFanucDryRunChangedRequested;
+            FanucPanel.OffsetUpdateRequested += OnFanucOffsetUpdateRequested;
+            FanucPanel.OffsetSystemSelectionChangedRequested += OnFanucOffsetSystemSelectionChangedRequested;
+            FanucPanel.OffsetReadActiveToEditorRequested += OnFanucOffsetReadActiveToEditorRequested;
+
             _animationTimer = new System.Windows.Threading.DispatcherTimer();
             _animationTimer.Tick += AnimationTimer_Tick;
+            _fanucClockTimer.Interval = TimeSpan.FromSeconds(1);
+            _fanucClockTimer.Tick += (_, _) => FanucPanel.UpdateStatusClock(DateTime.Now);
+            _fanucClockTimer.Start();
 
             InitToolVisual();
+            ConfigureControlMode();
             
             _stockModel.Material = MaterialHelper.CreateMaterial(Colors.LightGray);
             _stockModel.BackMaterial = _stockModel.Material;
             _stockVisual.Content = _stockModel;
             Viewport.Children.Add(_stockVisual);
+            _playbackLoopService.Reset(_lastPosition);
+            RefreshDiagnosticsPanel();
+            FanucPanel.UpdateStatusClock(DateTime.Now);
 
             UpdateResButtons();
+        }
+
+        private void ConfigureControlMode()
+        {
+            if (EnableLegacyUiControls)
+            {
+                if (LegacyControlsPanel != null)
+                {
+                    LegacyControlsPanel.Visibility = Visibility.Visible;
+                }
+                return;
+            }
+
+            if (LegacyControlsPanel != null)
+            {
+                LegacyControlsPanel.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private void MenuFanucWindowItem_Checked(object sender, RoutedEventArgs e)
+        {
+            if (FanucFloatingHost != null)
+            {
+                FanucFloatingHost.Visibility = Visibility.Visible;
+            }
+        }
+
+        private void MenuFanucWindowItem_Unchecked(object sender, RoutedEventArgs e)
+        {
+            if (FanucFloatingHost != null)
+            {
+                FanucFloatingHost.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private void FanucMinimizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            _isFanucMinimized = !_isFanucMinimized;
+            FanucFloatingContent.Visibility = _isFanucMinimized ? Visibility.Collapsed : Visibility.Visible;
+            FanucFloatingHost.Height = _isFanucMinimized ? 34 : 540;
+            FanucMinimizeButton.Content = _isFanucMinimized ? "□" : "_";
+        }
+
+        private void FanucFloatingHeader_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            _isFanucDragging = true;
+            _fanucDragStart = e.GetPosition(this);
+            _fanucStartLeft = Canvas.GetLeft(FanucFloatingHost);
+            _fanucStartTop = Canvas.GetTop(FanucFloatingHost);
+            FanucFloatingHeader.CaptureMouse();
+        }
+
+        private void FanucFloatingHeader_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (!_isFanucDragging)
+            {
+                return;
+            }
+
+            Point current = e.GetPosition(this);
+            double dx = current.X - _fanucDragStart.X;
+            double dy = current.Y - _fanucDragStart.Y;
+            Canvas.SetLeft(FanucFloatingHost, Math.Max(0, _fanucStartLeft + dx));
+            Canvas.SetTop(FanucFloatingHost, Math.Max(0, _fanucStartTop + dy));
+        }
+
+        private void FanucFloatingHeader_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (!_isFanucDragging)
+            {
+                return;
+            }
+
+            _isFanucDragging = false;
+            FanucFloatingHeader.ReleaseMouseCapture();
+        }
+
+        private void MenuCycleStart_Click(object sender, RoutedEventArgs e) => OnFanucCycleStartRequested();
+        private void MenuFeedHold_Click(object sender, RoutedEventArgs e) => OnFanucFeedHoldRequested();
+        private void MenuResetStop_Click(object sender, RoutedEventArgs e) => OnFanucResetRequested();
+
+        private void MenuSpeedPreset_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem item &&
+                double.TryParse(item.Tag?.ToString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double multiplier))
+            {
+                _simulationMultiplier = multiplier;
+                StatusText.Text = $"Множитель скорости: x{multiplier}";
+            }
+        }
+
+        private void MenuResolution_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem item &&
+                double.TryParse(item.Tag?.ToString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double res))
+            {
+                _selectedResolution = res;
+                UpdateResButtons();
+                if (IsLoaded)
+                {
+                    ApplyStock();
+                }
+            }
+        }
+
+        private void MenuStockVisible_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem item)
+            {
+                StockVisibleCheck.IsChecked = item.IsChecked;
+                StockVisible_Changed(item, e);
+            }
+        }
+
+        private void OnMachineStateChanged(MachineStateChangedEvent evt)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                _isControllerRunning = evt.IsRunning;
+                StatusText.Text = evt.IsRunning ? "Controller: Cycle start" : "Controller: Feed hold";
+                FanucPanel.UpdateRunState(evt.IsRunning);
+                FanucPanel.UpdateMachinePosition(evt.X, evt.Y, evt.Z);
+                PositionText.Text = $"X: {evt.X:F3} Y: {evt.Y:F3} Z: {evt.Z:F3}";
+                string spindleCode = evt.IsSpindleOn ? (evt.IsSpindleCW ? "M3" : "M4") : "M5";
+                string toolDisplay = evt.ToolNumber.HasValue ? $"T{evt.ToolNumber.Value}" : "-";
+                FanucPanel.UpdatePosRuntime(evt.FeedRate, toolDisplay, evt.SpindleSpeed, spindleCode, evt.IsCoolantOn);
+                _currentCoordSystem = evt.CoordinateSystem;
+                _currentOffsetX = evt.OffsetX;
+                _currentOffsetY = evt.OffsetY;
+                _currentOffsetZ = evt.OffsetZ;
+                FanucPanel.UpdateOffsets(_currentCoordSystem, _currentOffsetX, _currentOffsetY, _currentOffsetZ);
+
+                var machinePos = new Point3D(evt.X, evt.Y, evt.Z);
+                _lastPosition = machinePos;
+                _uiRenderService.SyncToolVisual(
+                    evt.ToolNumber,
+                    _tools,
+                    ToolsList,
+                    Viewport,
+                    _toolVisual,
+                    machinePos,
+                    UpdateToolGeometry,
+                    tool => tool.PropertyChanged += Tool_PropertyChanged,
+                    _currentParser == null || GCodeList.SelectedIndex < 0);
+
+                RefreshDiagnosticsPanel();
+            });
+        }
+
+        private void OnAlarmRaised(AlarmRaisedEvent evt)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                if (evt.Code.StartsWith("MDI", StringComparison.OrdinalIgnoreCase))
+                {
+                    _lastMdiStatus = "ERROR";
+                }
+                _lastInterlockCode = evt.Code;
+                _lastInterlockDetail = evt.Message;
+                StatusText.Text = $"Alarm {evt.Code}: {evt.Message}";
+                FanucPanel.SetAlarm($"{evt.Code} {evt.Message}", true);
+                RefreshDiagnosticsPanel();
+            });
+        }
+
+        private void OnMdiModeChanged(MdiModeChangedEvent evt)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                _currentMdiMode = evt.Mode;
+                RefreshDiagnosticsPanel();
+            });
+        }
+
+        private void OnProgramLineExecuted(ProgramLineExecutedEvent evt)
+        {
+            Dispatcher.Invoke(() => FanucPanel.UpdateProgramLine(evt.LineNumber));
+        }
+
+        private void OnWorkOffsetsChanged(WorkOffsetsChangedEvent evt)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                _workOffsets.Clear();
+                foreach (var offset in evt.Offsets)
+                {
+                    _workOffsets[offset.CoordinateSystemNumber] = (offset.X, offset.Y, offset.Z);
+                }
+
+                UpdateOffsetEditorBySystem(_selectedOffsetSystem);
+            });
+        }
+
+        private void OnFanucCycleStartRequested()
+        {
+            if (_controllerCore.CycleStart())
+            {
+                _lastInterlockCode = "OK";
+                _lastInterlockDetail = "Cycle start allowed";
+                if (!_runTimeStopwatch.IsRunning) _runTimeStopwatch.Start();
+                if (!_cycleTimeStopwatch.IsRunning) _cycleTimeStopwatch.Start();
+                StartAnimationCycle();
+                RefreshDiagnosticsPanel();
+            }
+        }
+
+        private void OnFanucFeedHoldRequested()
+        {
+            if (_controllerCore.FeedHold())
+            {
+                _lastInterlockCode = "OK";
+                _lastInterlockDetail = "Feed hold command accepted";
+                if (_runTimeStopwatch.IsRunning) _runTimeStopwatch.Stop();
+                if (_cycleTimeStopwatch.IsRunning) _cycleTimeStopwatch.Stop();
+                _accumulatedRunTime = _runTimeStopwatch.Elapsed;
+                _accumulatedCycleTime = _cycleTimeStopwatch.Elapsed;
+                PauseAnimationCycle();
+                RefreshDiagnosticsPanel();
+            }
+        }
+
+        private void OnFanucResetRequested()
+        {
+            _controllerCore.Reset();
+            _lastInterlockCode = "OK";
+            _lastInterlockDetail = "Reset command accepted";
+            _runTimeStopwatch.Reset();
+            _cycleTimeStopwatch.Reset();
+            _accumulatedRunTime = TimeSpan.Zero;
+            _accumulatedCycleTime = TimeSpan.Zero;
+            StopAnimationCycle();
+            RefreshDiagnosticsPanel();
+        }
+
+        private void OnFanucModeChangedRequested(string mode)
+        {
+            string normalizedMode = mode == "ZERO_RETURN" ? "ZeroReturn" : mode;
+            if (_controllerCore.SetMode(normalizedMode))
+            {
+                _currentControllerMode = mode;
+                _lastInterlockCode = "OK";
+                _lastInterlockDetail = $"Mode changed to {mode}";
+                StatusText.Text = $"Controller mode: {mode}";
+                FanucPanel.SetAlarm("NONE", false);
+                FanucPanel.UpdateMode(mode);
+                RefreshDiagnosticsPanel();
+                return;
+            }
+
+            FanucPanel.UpdateMode(_currentControllerMode);
+        }
+
+        private void OnFanucJogRequested(string axis, double delta)
+        {
+            if (_controllerCore.Jog(axis, delta))
+            {
+                _lastInterlockCode = "OK";
+                _lastInterlockDetail = $"Jog {axis}{delta:+0.0;-0.0} accepted";
+                StatusText.Text = $"Jog {axis}{delta:+0.0;-0.0}";
+                RefreshDiagnosticsPanel();
+            }
+        }
+
+        private void OnFanucMdiExecuteRequested(string command)
+        {
+            _lastMdiCommand = string.IsNullOrWhiteSpace(command) ? "-" : command.Trim();
+            if (_controllerCore.ExecuteMdi(command))
+            {
+                _lastInterlockCode = "OK";
+                _lastInterlockDetail = "MDI command accepted";
+                _lastMdiStatus = "OK";
+                StatusText.Text = $"MDI executed: {command}";
+                RefreshDiagnosticsPanel();
+            }
+            else
+            {
+                _lastMdiStatus = "ERROR";
+                RefreshDiagnosticsPanel();
+            }
+        }
+
+        private void OnFanucProgDirectoryCreateAndOpenRequested(string normalizedOLine)
+        {
+            string fileName = normalizedOLine + ".nc";
+            if (string.IsNullOrEmpty(normalizedOLine) ||
+                fileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+                fileName.Contains(Path.DirectorySeparatorChar) ||
+                fileName.Contains(Path.AltDirectorySeparatorChar))
+            {
+                FanucPanel.SetAlarm("PROGRAM NAME INVALID", true);
+                return;
+            }
+
+            try
+            {
+                string dir = FanucPanel.ResolveNcProgramsDirectory();
+                string path = Path.Combine(dir, fileName);
+
+                if (File.Exists(path))
+                {
+                    FanucPanel.SetAlarm($"PROGRAM FILE EXISTS ({fileName})", true);
+                    return;
+                }
+
+                string fullPath = Path.GetFullPath(path);
+                string? parentDir = Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrEmpty(parentDir))
+                    Directory.CreateDirectory(parentDir);
+
+                File.WriteAllText(path, normalizedOLine + Environment.NewLine);
+
+                LoadAndRender(path);
+                FanucPanel.NavigateToProgMainScreen();
+                FanucPanel.ClearMdiInputBuffer();
+            }
+            catch (Exception ex)
+            {
+                FanucPanel.SetAlarm($"NEW PROGRAM: {ex.Message}", true);
+            }
+        }
+
+        private void OnFanucProgOpenByNameRequested(string normalizedOLine)
+        {
+            if (!FanucPanel.TryResolveNcProgramFile(normalizedOLine, out string? path) || !File.Exists(path))
+            {
+                return;
+            }
+
+            LoadAndRender(path);
+            FanucPanel.NavigateToProgMainScreen();
+        }
+
+        private void OnFanucProgDeleteProgramByNameRequested(string normalizedOLine)
+        {
+            if (!FanucPanel.TryResolveNcProgramFile(normalizedOLine, out string? path) || !File.Exists(path))
+            {
+                return;
+            }
+
+            try
+            {
+                File.Delete(path);
+            }
+            catch (Exception ex)
+            {
+                FanucPanel.SetAlarm($"DELETE: {ex.Message}", true);
+                return;
+            }
+
+            string deletedFull = Path.GetFullPath(path);
+            if (_loadedNcProgramPath != null
+                && string.Equals(deletedFull, _loadedNcProgramPath, StringComparison.OrdinalIgnoreCase))
+            {
+                ClearLoadedNcProgram();
+            }
+
+            FanucPanel.LogUserAction($"Удалён файл: {Path.GetFileName(path)}");
+            FanucPanel.RefreshDirectoryListingFromDisk();
+        }
+
+        private void ClearLoadedNcProgram()
+        {
+            ClearToolpath();
+            _lineVisualsMap.Clear();
+            _tools.Clear();
+            _currentLines = Array.Empty<string>();
+            GCodeList.ItemsSource = _currentLines;
+            _currentParser = null;
+            _programExecutionService.LoadProgram(Array.Empty<ParsedCommand>());
+            _programExecutionService.SetCurrentIndex(0);
+            _loadedNcProgramPath = null;
+            StatsBox.Text = string.Empty;
+            FanucPanel.SetNcProgramSource(Array.Empty<string>(), null);
+            FanucPanel.LogUserAction("Программа снята (очистка)");
+        }
+
+        private void OnFanucSingleBlockChangedRequested(bool enabled)
+        {
+            _isSingleBlockEnabled = enabled;
+            _programExecutionService.SetSingleBlock(enabled);
+            _lastInterlockCode = "SETTING";
+            _lastInterlockDetail = enabled ? "Single block enabled" : "Single block disabled";
+            RefreshDiagnosticsPanel();
+        }
+
+        private void OnFanucOptionalStopChangedRequested(bool enabled)
+        {
+            _isOptionalStopEnabled = enabled;
+            _programExecutionService.SetOptionalStop(enabled);
+            _lastInterlockCode = "SETTING";
+            _lastInterlockDetail = enabled ? "Optional stop enabled" : "Optional stop disabled";
+            RefreshDiagnosticsPanel();
+        }
+
+        private void OnFanucDryRunChangedRequested(bool enabled)
+        {
+            _isDryRunEnabled = enabled;
+            _lastInterlockCode = "SETTING";
+            _lastInterlockDetail = enabled ? "Dry run enabled" : "Dry run disabled";
+            RefreshDiagnosticsPanel();
+        }
+
+        private void OnFanucOffsetUpdateRequested(int coordinateSystemNumber, double? x, double? y, double? z)
+        {
+            int pNumber = coordinateSystemNumber - 53;
+            string mdi = $"G10 L2 P{pNumber}";
+            if (x.HasValue) mdi += $" X{x.Value:0.###}";
+            if (y.HasValue) mdi += $" Y{y.Value:0.###}";
+            if (z.HasValue) mdi += $" Z{z.Value:0.###}";
+            OnFanucMdiExecuteRequested(mdi);
+        }
+
+        private void OnFanucOffsetSystemSelectionChangedRequested(int coordinateSystemNumber)
+        {
+            _selectedOffsetSystem = coordinateSystemNumber;
+            UpdateOffsetEditorBySystem(coordinateSystemNumber);
+        }
+
+        private void OnFanucOffsetReadActiveToEditorRequested()
+        {
+            if (_currentCoordSystem.Length == 3 &&
+                _currentCoordSystem.StartsWith("G", StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(_currentCoordSystem[1..], out int systemNumber))
+            {
+                _selectedOffsetSystem = systemNumber;
+                UpdateOffsetEditorBySystem(systemNumber);
+            }
+        }
+
+        private void RefreshDiagnosticsPanel()
+        {
+            var runTime = _runTimeStopwatch.IsRunning ? _runTimeStopwatch.Elapsed : _accumulatedRunTime;
+            var cycleTime = _cycleTimeStopwatch.IsRunning ? _cycleTimeStopwatch.Elapsed : _accumulatedCycleTime;
+            FanucPanel.UpdatePosTimers(runTime, cycleTime);
+            FanucPanel.UpdateDiagnostics(
+                _currentControllerMode,
+                _currentMdiMode,
+                _isControllerRunning,
+                _lastInterlockCode,
+                _lastInterlockDetail,
+                "LIMITS X[-500;500] Y[-500;500] Z[-300;300]",
+                _lastMdiCommand,
+                _lastMdiStatus,
+                _isSingleBlockEnabled,
+                _isOptionalStopEnabled,
+                _isDryRunEnabled);
+            FanucPanel.UpdateOffsets(_currentCoordSystem, _currentOffsetX, _currentOffsetY, _currentOffsetZ);
+            UpdateOffsetEditorBySystem(_selectedOffsetSystem);
+            FanucPanel.UpdateSettings(
+                WorkOverrideSlider?.Value ?? 100,
+                RapidOverrideSlider?.Value ?? 100,
+                _isSingleBlockEnabled,
+                _isOptionalStopEnabled,
+                _isDryRunEnabled);
+            FanucPanel.UpdateSystemPage(
+                _systemUnitsText,
+                _systemCoordModeText,
+                _systemPlaneText,
+                _systemMotionText,
+                _currentCoordSystem,
+                _systemCompText);
         }
 
         private void OnRendering(object? sender, EventArgs e)
@@ -241,6 +787,11 @@ namespace CNCSS
 
         private void OverrideSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
+            UpdateOverrideTexts();
+        }
+
+        private void UpdateOverrideTexts()
+        {
             if (WorkOverrideText != null && WorkOverrideSlider != null)
                 WorkOverrideText.Text = WorkOverrideSlider.Value.ToString("F0") + "%";
             
@@ -250,115 +801,69 @@ namespace CNCSS
 
         private async void AnimationTimer_Tick(object? sender, EventArgs e)
         {
+            FanucPanel.UpdatePosTimers(
+                _runTimeStopwatch.IsRunning ? _runTimeStopwatch.Elapsed : _accumulatedRunTime,
+                _cycleTimeStopwatch.IsRunning ? _cycleTimeStopwatch.Elapsed : _accumulatedCycleTime);
+
+            var machineCore = _machineCore as MachineCore;
+            if (machineCore != null && !machineCore.State.IsRunning)
+            {
+                return;
+            }
+
             // Обновляем прогресс-бар выполнения G-кода
             if (MainProgressBar != null && _currentLines.Length > 0)
             {
                 MainProgressBar.Value = (double)(GCodeList.SelectedIndex + 1) / _currentLines.Length * 100;
             }
-
-            ParsedCommand? currentCmd = null;
-            if (_interpolationProgress >= 1.0)
+            if (_currentParser == null)
             {
-                int selectedLine = GCodeList.SelectedIndex + 1;
-                currentCmd = _currentParser?.Commands.LastOrDefault(c => c.LineNumber <= selectedLine);
-
-                // Если мы закончили этап Z в G28, переходим к этапу XY
-                if (currentCmd != null && currentCmd.GCodes.Any(g => g.Number == 28) && 
-                    Math.Abs(_lastPosition.Z - MachineState.HOME_Z) < 0.001 && 
-                    (Math.Abs(_lastPosition.X - MachineState.HOME_X) > 0.001 || Math.Abs(_lastPosition.Y - MachineState.HOME_Y) > 0.001))
-                {
-                    _startInterpolationPos = _lastPosition;
-                    _targetInterpolationPos = new Point3D(MachineState.HOME_X, MachineState.HOME_Y, MachineState.HOME_Z);
-                    _interpolationProgress = 0;
-                    _animationTimer.Interval = TimeSpan.FromMilliseconds(10);
-                }
-                else if (GCodeList.SelectedIndex < GCodeList.Items.Count - 1)
-                {
-                    _startInterpolationPos = _lastPosition;
-                    GCodeList.SelectedIndex++;
-                    GCodeList.ScrollIntoView(GCodeList.SelectedItem);
-                    SyncToolWithState();
-                    _targetInterpolationPos = GetCurrentPosition();
-
-                    // Специальная обработка G28 для анимации: разделение на два этапа
-                    selectedLine = GCodeList.SelectedIndex + 1;
-                    currentCmd = _currentParser?.Commands.LastOrDefault(c => c.LineNumber <= selectedLine);
-                    if (currentCmd != null && currentCmd.GCodes.Any(g => g.Number == 28))
-                    {
-                        if (Math.Abs(_startInterpolationPos.Z - MachineState.HOME_Z) > 0.001)
-                        {
-                            // Этап 1: только Z
-                            _targetInterpolationPos = new Point3D(_startInterpolationPos.X, _startInterpolationPos.Y, MachineState.HOME_Z);
-                        }
-                    }
-                    
-                    double dist = (_targetInterpolationPos - _startInterpolationPos).Length;
-                    if (dist < 0.0001)
-                    {
-                        _interpolationProgress = 1.0;
-                        _animationTimer.Interval = TimeSpan.FromMilliseconds(100);
-                    }
-                    else
-                    {
-                        _interpolationProgress = 0;
-                        _animationTimer.Interval = TimeSpan.FromMilliseconds(10);
-                    }
-                }
-                else { StopButton_Click(this, new RoutedEventArgs()); return; }
+                StopAnimationCycle();
+                return;
             }
 
-            Point3D currentPos;
-            if (_interpolationProgress < 1.0)
+            var tick = _playbackLoopService.Tick(
+                machineCore?.State.IsRunning ?? false,
+                _lastPosition,
+                state => GetPhysicalSpeed(state),
+                _simulationMultiplier,
+                _fpsSlowdownFactor);
+
+            if (tick.Action == PlaybackLoopAction.StopProgram)
             {
-                double dist = (_targetInterpolationPos - _startInterpolationPos).Length;
-                if (dist > 0)
+                StopAnimationCycle();
+                return;
+            }
+
+            if (tick.HasIndexUpdate && GCodeList.SelectedIndex != tick.NewIndex)
+            {
+                _suppressSelectionSideEffects = true;
+                GCodeList.SelectedIndex = tick.NewIndex;
+                GCodeList.ScrollIntoView(GCodeList.SelectedItem);
+                SyncToolWithState();
+                _suppressSelectionSideEffects = false;
+            }
+
+            _animationTimer.Interval = TimeSpan.FromMilliseconds(tick.TimerIntervalMs);
+            _interpolationProgress = tick.Progress;
+            Point3D currentPos = tick.CurrentPosition;
+
+            if (tick.Action == PlaybackLoopAction.PauseForOptionalStop)
+            {
+                _suppressSelectionSideEffects = true;
+                GCodeList.SelectedIndex = tick.NewIndex;
+                GCodeList.ScrollIntoView(GCodeList.SelectedItem);
+                SyncToolWithState();
+                _suppressSelectionSideEffects = false;
+
+                if (_controllerCore.FeedHold())
                 {
-                    int selectedLine = GCodeList.SelectedIndex + 1;
-                    var lastCmd = _currentParser?.Commands.LastOrDefault(c => c.LineNumber <= selectedLine);
-                    double speedMmPerSec = lastCmd != null ? GetPhysicalSpeed(lastCmd.EndState) : 10.0;
-                    
-                    if (speedMmPerSec <= 0) speedMmPerSec = 0.001;
-
-                    // Применяем множитель скорости симуляции и коэффициент замедления при низком FPS
-                    double step = (speedMmPerSec * 0.01 * _simulationMultiplier * _fpsSlowdownFactor) / dist;
-                    _interpolationProgress = Math.Min(1.0, _interpolationProgress + step);
+                    _lastInterlockCode = "OPTIONAL_STOP";
+                    _lastInterlockDetail = "Program paused at M1";
+                    PauseAnimationCycle();
+                    RefreshDiagnosticsPanel();
                 }
-                else { _interpolationProgress = 1.0; }
-            }
-
-            int currentLine = GCodeList.SelectedIndex + 1;
-            currentCmd = _currentParser?.Commands.LastOrDefault(c => c.LineNumber <= currentLine);
-
-            if (currentCmd?.Arc != null && _interpolationProgress < 1.0)
-            {
-                var arc = currentCmd.Arc;
-                double currentAngle = arc.StartAngleRad + arc.SweepAngleRad * _interpolationProgress;
-                double u = arc.CenterU + arc.Radius * Math.Cos(currentAngle);
-                double v = arc.CenterV + arc.Radius * Math.Sin(currentAngle);
-                
-                // Интерполяция по третьей оси (линейная)
-                double t = _interpolationProgress;
-                
-                if (arc.Plane == 17) // XY
-                    currentPos = new Point3D(u, v, arc.StartZ + (arc.EndZ - arc.StartZ) * t);
-                else if (arc.Plane == 18) // XZ
-                    currentPos = new Point3D(u, arc.StartY + (arc.EndY - arc.StartY) * t, v);
-                else if (arc.Plane == 19) // YZ
-                    currentPos = new Point3D(arc.StartX + (arc.EndX - arc.StartX) * t, u, v);
-                else
-                    currentPos = new Point3D(
-                        _startInterpolationPos.X + (_targetInterpolationPos.X - _startInterpolationPos.X) * _interpolationProgress,
-                        _startInterpolationPos.Y + (_targetInterpolationPos.Y - _startInterpolationPos.Y) * _interpolationProgress,
-                        _startInterpolationPos.Z + (_targetInterpolationPos.Z - _startInterpolationPos.Z) * _interpolationProgress
-                    );
-            }
-            else
-            {
-                currentPos = new Point3D(
-                    _startInterpolationPos.X + (_targetInterpolationPos.X - _startInterpolationPos.X) * _interpolationProgress,
-                    _startInterpolationPos.Y + (_targetInterpolationPos.Y - _startInterpolationPos.Y) * _interpolationProgress,
-                    _startInterpolationPos.Z + (_targetInterpolationPos.Z - _startInterpolationPos.Z) * _interpolationProgress
-                );
+                return;
             }
 
             PositionText.Text = $"X: {currentPos.X:F3} Y: {currentPos.Y:F3} Z: {currentPos.Z:F3}";
@@ -369,43 +874,46 @@ namespace CNCSS
                 var lastCmd = _currentParser.Commands.LastOrDefault(c => c.LineNumber <= selectedLine);
                 if (lastCmd != null)
                 {
+                    FanucPanel.UpdateProgramLine(lastCmd.LineNumber);
                     var state = lastCmd.EndState;
-                    FeedStatusText.Text = $"F: {state.EffectiveFeedRate:F0} мм/мин";
-                    
-                    string spindleDir = "M5";                    if (state.IsSpindleOn)
+                    ApplyRuntimeStatus(state);
+                    if (_machineCore is MachineCore runtimeSyncMachineCore)
                     {
-                        spindleDir = state.IsSpindleCW ? "M3" : "M4";
+                        runtimeSyncMachineCore.SyncRuntimeFromState(state);
                     }
-                    SpindleStatusText.Text = $"S: {state.SpindleSpeed:F0} об/мин ({spindleDir})";
-                    CoolantText.Text = $"СОЖ: {(state.IsCoolantOn ? "ВКЛ" : "ВЫКЛ")}";
-                    
-                    if (state.ToolNumber.HasValue)
-                        ToolText.Text = $"Инструмент: T{state.ToolNumber.Value}";
-                    
-                    CoordSystemText.Text = $"СК: {state.CurrentCoordinateSystem.Letter}{state.CurrentCoordinateSystem.Number}";
-                    RefSystemText.Text = $"Отсчет: {(state.IsAbsolute ? "ABS (G90)" : "INC (G91)")}";
                 }
             }
             if (ToolsList.SelectedItem is ToolViewModel tool)
             {
                 UpdateToolGeometry(tool, currentPos);
-                if (_stock != null && StockVisibleCheck.IsChecked == true)
+                _stockRenderService.ProcessCutStep(
+                    _isDryRunEnabled,
+                    _stock,
+                    _stockCutWorker,
+                    StockVisibleCheck,
+                    tool,
+                    _lastPosition,
+                    currentPos);
+
+                if (_stockRenderService.ShouldRefreshStock(_stock, _isStockUpdating, 250))
                 {
-                    var pStart = _lastPosition;
-                    var pEnd = currentPos;
-                    var diam = tool.Diameter;
-                    var flute = tool.FluteLength;
-
-                    _stockCutWorker?.EnqueueCut(pStart, pEnd, diam / 2.0, flute);
-
-                    // Увеличиваем порог обновления до 250мс для снижения нагрузки на UI
-                    if (_stock.IsDirty && !_isStockUpdating && (DateTime.Now - _lastStockUpdateTime).TotalMilliseconds > 250)
-                    {
-                        _ = UpdateStockMeshAsync();
-                    }
+                    _ = UpdateStockMeshAsync();
                 }
             }
             _lastPosition = currentPos;
+            _machineCore.UpdatePosition(currentPos.X, currentPos.Y, currentPos.Z);
+            _machineCore.Tick(0.01);
+
+            if (tick.Action == PlaybackLoopAction.PauseForSingleBlock)
+            {
+                if (_controllerCore.FeedHold())
+                {
+                    _lastInterlockCode = "SINGLE_BLOCK";
+                    _lastInterlockDetail = "Program paused after block";
+                    PauseAnimationCycle();
+                    RefreshDiagnosticsPanel();
+                }
+            }
         }
 
         private async Task UpdateStockMeshAsync(bool showProgress = false)
@@ -415,22 +923,7 @@ namespace CNCSS
             
             try
             {
-                if (showProgress && StockProgressPanel != null)
-                {
-                    StockProgressPanel.Visibility = Visibility.Visible;
-                    await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Render);
-                }
-                
-                // Выполняем тяжелый расчет геометрии в фоне
-                await _stock.UpdateVisualsAsync();
-                
-                // Обновляем визуальный контент в UI-потоке
-                if (_stockVisual.Content != _stock.MainModel)
-                {
-                    _stockVisual.Content = _stock.MainModel;
-                }
-                
-                _lastStockUpdateTime = DateTime.Now;
+                await _stockRenderService.RefreshStockVisualAsync(_stock, _stockVisual, StockProgressPanel, showProgress);
             }
             catch (Exception ex)
             {
@@ -439,46 +932,101 @@ namespace CNCSS
             finally 
             { 
                 _isStockUpdating = false;
-                if (StockProgressPanel != null) StockProgressPanel.Visibility = Visibility.Collapsed;
             }
         }
 
         private void PlayButton_Click(object sender, RoutedEventArgs e)
         {
+            if (_controllerCore.CycleStart())
+            {
+                StartAnimationCycle();
+            }
+        }
+
+        private void PauseButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_controllerCore.FeedHold())
+            {
+                PauseAnimationCycle();
+            }
+        }
+
+        private void StopButton_Click(object sender, RoutedEventArgs e)
+        {
+            _controllerCore.Reset();
+            StopAnimationCycle();
+        }
+
+        private void StartAnimationCycle()
+        {
             if (GCodeList.Items.Count == 0) return;
             if (GCodeList.SelectedIndex >= GCodeList.Items.Count - 1) GCodeList.SelectedIndex = 0;
+            _programExecutionService.SetCurrentIndex(GCodeList.SelectedIndex);
+            _programExecutionService.BeginCycle();
+            _playbackLoopService.BeginSegmentFrom(_lastPosition);
             _animationTimer.Start();
             PlayButton.IsEnabled = false;
             PauseButton.IsEnabled = true;
         }
 
-        private void PauseButton_Click(object sender, RoutedEventArgs e)
+        private void PauseAnimationCycle()
         {
             _animationTimer.Stop();
+            _programExecutionService.ClearSingleBlockStop();
             PlayButton.IsEnabled = true;
             PauseButton.IsEnabled = false;
         }
 
-        private void StopButton_Click(object sender, RoutedEventArgs e)
+        private void StopAnimationCycle()
         {
             _animationTimer.Stop();
+            _programExecutionService.ClearSingleBlockStop();
+            if (_runTimeStopwatch.IsRunning) _runTimeStopwatch.Stop();
+            if (_cycleTimeStopwatch.IsRunning) _cycleTimeStopwatch.Stop();
+            _accumulatedRunTime = _runTimeStopwatch.Elapsed;
+            _accumulatedCycleTime = _cycleTimeStopwatch.Elapsed;
             GCodeList.SelectedIndex = 0;
+            _programExecutionService.SetCurrentIndex(0);
             PlayButton.IsEnabled = true;
             PauseButton.IsEnabled = false;
-            
-            // Сброс позиции инструмента (опционально)
             _lastPosition = new Point3D(MachineState.HOME_X, MachineState.HOME_Y, MachineState.HOME_Z);
             _interpolationProgress = 1.0;
+            _playbackLoopService.Reset(_lastPosition);
+            FanucPanel.UpdateProgramLine(null);
         }
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             UpdateResButtons();
-            OverrideSlider_ValueChanged(this, null);
-            var path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "program.nc");
-            if (!File.Exists(path)) path = Path.Combine(Directory.GetCurrentDirectory(), "program.nc");
-            if (!File.Exists(path)) CreateDemoNc(path);
-            if (File.Exists(path)) LoadAndRender(path);
+            UpdateOverrideTexts();
+
+            static bool TryNcPath(string fileName, out string resolved)
+            {
+                foreach (string root in new[] { AppDomain.CurrentDomain.BaseDirectory, Directory.GetCurrentDirectory() })
+                {
+                    string p = Path.Combine(root, fileName);
+                    if (File.Exists(p))
+                    {
+                        resolved = Path.GetFullPath(p);
+                        return true;
+                    }
+                }
+
+                resolved = string.Empty;
+                return false;
+            }
+
+            string ncPath;
+            if (!TryNcPath("O0001.nc", out ncPath))
+            {
+                if (!TryNcPath("program.nc", out ncPath))
+                {
+                    ncPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "program.nc");
+                    CreateDemoNc(ncPath);
+                }
+            }
+
+            LoadAndRender(ncPath);
         }
 
         private static void CreateDemoNc(string filePath)
@@ -592,6 +1140,10 @@ M30";
         {
             if (_stockVisual != null) _stockVisual.Content = (StockVisibleCheck.IsChecked == true) ? _stockModel : null;
             if (ResolutionStatusText != null) ResolutionStatusText.Visibility = (StockVisibleCheck.IsChecked == true) ? Visibility.Visible : Visibility.Collapsed;
+            if (MenuStockVisibleItem != null)
+            {
+                MenuStockVisibleItem.IsChecked = StockVisibleCheck.IsChecked == true;
+            }
         }
 
         private void ApplySettingsTop_Click(object sender, RoutedEventArgs e)
@@ -668,6 +1220,9 @@ M30";
                 GCodeList.ItemsSource = _currentLines;
                 _currentParser = new GCodeParser();
                 _currentParser.ProcessFile(filePath);
+                _programExecutionService.LoadProgram(_currentParser.Commands);
+                _programExecutionService.SetCurrentIndex(0);
+                _playbackLoopService.Reset(new Point3D(MachineState.HOME_X, MachineState.HOME_Y, MachineState.HOME_Z));
                 _tools.Clear();
                 var toolNumbers = _currentParser.Commands.Where(c => c.ToolNumber.HasValue).Select(c => c.ToolNumber!.Value).Distinct().OrderBy(n => n);
                 foreach (var t in toolNumbers) { var tool = new ToolViewModel { Number = t }; tool.PropertyChanged += Tool_PropertyChanged; _tools.Add(tool); }
@@ -703,6 +1258,9 @@ M30";
                 StatsBox.Text = BuildStatsText(filePath, _currentParser, segmentsWithLines.Select(s => s.Segment).ToList());
                 UpdateMachineStateUI(_currentParser.State);
                 if (ToolsList.SelectedItem is ToolViewModel selectedTool) UpdateToolGeometry(selectedTool, GetCurrentPosition());
+                FanucPanel.SetNcProgramSource(_currentLines ?? Array.Empty<string>(), filePath);
+                _loadedNcProgramPath = Path.GetFullPath(filePath);
+                FanucPanel.LogUserAction($"Загрузка программы: {Path.GetFileName(filePath)}");
                 Dispatcher.BeginInvoke(() => Viewport.ZoomExtents(), System.Windows.Threading.DispatcherPriority.Loaded);
             }
             catch (Exception ex) { MessageBox.Show(this, ex.Message, "Ошибка загрузки", MessageBoxButton.OK, MessageBoxImage.Error); }
@@ -719,30 +1277,63 @@ M30";
         private void GCodeList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (GCodeList.SelectedIndex < 0 || _currentParser == null) return;
+            _programExecutionService.SetCurrentIndex(GCodeList.SelectedIndex);
+            if (_suppressSelectionSideEffects)
+            {
+                return;
+            }
+
+            _lastPosition = GetCurrentPosition();
+            _playbackLoopService.BeginSegmentFrom(_lastPosition);
             int selectedLine = GCodeList.SelectedIndex + 1;
             SyncToolWithState();
             if (ToolsList.SelectedItem is ToolViewModel tool) UpdateToolGeometry(tool, GetCurrentPosition());
-            foreach (var entry in _lineVisualsMap)
-            {
-                bool isVisible = entry.Key <= selectedLine;
-                foreach (var visual in entry.Value)
-                {
-                    if (isVisible && !Viewport.Children.Contains(visual)) Viewport.Children.Add(visual);
-                    else if (!isVisible && Viewport.Children.Contains(visual)) Viewport.Children.Remove(visual);
-                }
-            }
-            var stateParser = new GCodeParser();
-            foreach (var cmd in _currentParser.Commands) { if (cmd.LineNumber <= selectedLine) CommandReplayer.ReplayCommand(stateParser, cmd); else break; }
+            _toolpathRenderService.UpdateVisibilityByLine(_lineVisualsMap, Viewport, selectedLine);
+            var stateParser = _programStateService.BuildStateAtLine(_currentParser, selectedLine);
             UpdateMachineStateUI(stateParser.State);
         }
 
         private void UpdateMachineStateUI(MachineState state)
         {
-            ToolText.Text = $"Инструмент: {(state.ToolNumber?.ToString() ?? "-")}";
-            CoordSystemText.Text = $"СК: {state.CurrentCoordinateSystem.Letter}{state.CurrentCoordinateSystem.Number}";
-            RefSystemText.Text = $"Отсчет: {(state.IsAbsolute ? "ABS (G90)" : "INC (G91)")}";
             PositionText.Text = $"X: {state.X:F3} Y: {state.Y:F3} Z: {state.Z:F3}";
-            CoolantText.Text = $"СОЖ: {(state.IsCoolantOn ? "ВКЛ" : "ВЫКЛ")}";
+            FanucPanel.UpdateMachinePosition(state.X, state.Y, state.Z);
+            ApplyRuntimeStatus(state);
+        }
+
+        private void ApplyRuntimeStatus(MachineState state)
+        {
+            _currentCoordSystem = $"{state.CurrentCoordinateSystem.Letter}{state.CurrentCoordinateSystem.Number}";
+            _systemUnitsText = state.IsMetric ? "MM (G21)" : "INCH (G20)";
+            _systemCoordModeText = state.IsAbsolute ? "ABS (G90)" : "INC (G91)";
+            _systemPlaneText = state.CurrentPlane.Number switch
+            {
+                17 => "G17 (XY)",
+                18 => "G18 (XZ)",
+                19 => "G19 (YZ)",
+                _ => $"G{state.CurrentPlane.Number}"
+            };
+            _systemMotionText = $"G{state.CurrentMotionMode.Number}";
+            _systemCompText = $"LEN G{state.ToolLengthCompensation.Number} RAD G{state.CutterCompensation.Number}";
+            var activeOffset = state.GetActiveWorkOffset();
+            _currentOffsetX = activeOffset.X;
+            _currentOffsetY = activeOffset.Y;
+            _currentOffsetZ = activeOffset.Z;
+            for (int i = MachineState.MinWorkOffsetNumber; i <= MachineState.MaxWorkOffsetNumber; i++)
+            {
+                var value = state.GetWorkOffset(i);
+                _workOffsets[i] = (value.X, value.Y, value.Z);
+            }
+            FanucPanel.UpdateOffsets(_currentCoordSystem, _currentOffsetX, _currentOffsetY, _currentOffsetZ);
+            UpdateOffsetEditorBySystem(_selectedOffsetSystem);
+            _uiRenderService.ApplyRuntimeStatus(
+                state,
+                FanucPanel,
+                ToolText,
+                CoordSystemText,
+                RefSystemText,
+                FeedStatusText,
+                SpindleStatusText,
+                CoolantText);
         }
 
         private static string BuildStatsText(string filePath, GCodeParser parser, List<ToolpathSegment> segments)
@@ -759,17 +1350,109 @@ M30";
 
         private void ClearToolpath() { foreach (var v in _toolpathVisuals) Viewport.Children.Remove(v); _toolpathVisuals.Clear(); }
 
-        protected override void OnKeyDown(KeyEventArgs e)
+        protected override void OnPreviewKeyDown(KeyEventArgs e)
         {
-            if (e.Key == Key.O && Keyboard.Modifiers == ModifierKeys.Control) OpenFile_Click(this, e);
-            else if (e.Key == Key.F) Viewport.ZoomExtents();
-            base.OnKeyDown(e);
+            if (FanucPanel.TryHandleNcProgramKeys(e.Key))
+            {
+                e.Handled = true;
+                base.OnPreviewKeyDown(e);
+                return;
+            }
+
+            if (e.Key == Key.O && Keyboard.Modifiers == ModifierKeys.Control)
+            {
+                OpenFile_Click(this, e);
+            }
+
+            bool mdiTyping = FanucPanel.IsMdiLineKeyboardFocused();
+            if (!mdiTyping)
+            {
+                if (e.Key == Key.F)
+                {
+                    Viewport.ZoomExtents();
+                }
+                else if (e.Key == Key.PageUp || e.Key == Key.Oem4)
+                {
+                    if (FanucPanel.TryNavigateProgramDirectoryPage(-1))
+                    {
+                        e.Handled = true;
+                    }
+                    else
+                    {
+                        FanucPanel.NavigateSoftkeyPrev();
+                        e.Handled = true;
+                    }
+                }
+                else if (e.Key == Key.PageDown || e.Key == Key.Oem6)
+                {
+                    if (FanucPanel.TryNavigateProgramDirectoryPage(1))
+                    {
+                        e.Handled = true;
+                    }
+                    else
+                    {
+                        FanucPanel.NavigateSoftkeyNext();
+                        e.Handled = true;
+                    }
+                }
+                else if (e.Key == Key.Left)
+                {
+                    FanucPanel.NavigateSoftkeyPrev();
+                    e.Handled = true;
+                }
+                else if (e.Key == Key.Right)
+                {
+                    FanucPanel.NavigateSoftkeyNext();
+                    e.Handled = true;
+                }
+            }
+
+            base.OnPreviewKeyDown(e);
         }
 
         protected override void OnClosed(EventArgs e)
         {
             _stockCutWorker?.Dispose();
+            _machineStateSubscription.Dispose();
+            _alarmSubscription.Dispose();
+            _mdiModeSubscription.Dispose();
+            _programLineSubscription.Dispose();
+            _workOffsetsSubscription.Dispose();
+            FanucPanel.CycleStartRequested -= OnFanucCycleStartRequested;
+            FanucPanel.FeedHoldRequested -= OnFanucFeedHoldRequested;
+            FanucPanel.ResetRequested -= OnFanucResetRequested;
+            FanucPanel.ModeChangedRequested -= OnFanucModeChangedRequested;
+            FanucPanel.JogRequested -= OnFanucJogRequested;
+            FanucPanel.MdiExecuteRequested -= OnFanucMdiExecuteRequested;
+            FanucPanel.ProgDirectoryCreateAndOpenRequested -= OnFanucProgDirectoryCreateAndOpenRequested;
+            FanucPanel.ProgOpenByNameRequested -= OnFanucProgOpenByNameRequested;
+            FanucPanel.ProgDeleteProgramByNameRequested -= OnFanucProgDeleteProgramByNameRequested;
+            FanucPanel.SingleBlockChangedRequested -= OnFanucSingleBlockChangedRequested;
+            FanucPanel.OptionalStopChangedRequested -= OnFanucOptionalStopChangedRequested;
+            FanucPanel.DryRunChangedRequested -= OnFanucDryRunChangedRequested;
+            FanucPanel.OffsetUpdateRequested -= OnFanucOffsetUpdateRequested;
+            FanucPanel.OffsetSystemSelectionChangedRequested -= OnFanucOffsetSystemSelectionChangedRequested;
+            FanucPanel.OffsetReadActiveToEditorRequested -= OnFanucOffsetReadActiveToEditorRequested;
+            if (_machineCore is IDisposable disposableMachineCore)
+            {
+                disposableMachineCore.Dispose();
+            }
             base.OnClosed(e);
+        }
+
+        private void UpdateOffsetEditorBySystem(int coordinateSystemNumber)
+        {
+            if (!_workOffsets.TryGetValue(coordinateSystemNumber, out var values))
+            {
+                values = (0, 0, 0);
+            }
+
+            FanucPanel.UpdateOffsetEditor($"G{coordinateSystemNumber}", values.X, values.Y, values.Z);
+        }
+
+        private void FanucPanel_Loaded(object sender, RoutedEventArgs e)
+        {
+
         }
     }
 }

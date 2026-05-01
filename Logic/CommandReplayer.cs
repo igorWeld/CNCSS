@@ -23,6 +23,11 @@ namespace CNCSS.Logic
 
         public static void ReplayCommand(GCodeParser parser, ParsedCommand cmd)
         {
+            if (TryApplyWorkOffsetCommand(parser.State, cmd))
+            {
+                return;
+            }
+
             foreach (var gCode in cmd.GCodes)
                 ApplyGCodeToState(parser.State, gCode.Number);
 
@@ -49,6 +54,37 @@ namespace CNCSS.Logic
             {
                 parser.State.UpdatePosition(cmd.X, cmd.Y, cmd.Z, cmd.A, cmd.B, cmd.C);
             }
+        }
+
+        private static bool TryApplyWorkOffsetCommand(MachineState state, ParsedCommand cmd)
+        {
+            if (!cmd.GCodes.Any(g => g.Number == 10))
+            {
+                return false;
+            }
+
+            if (!cmd.Parameters.TryGetValue("L", out var lValue) || Math.Abs(lValue - 2.0) > 0.0001)
+            {
+                return false;
+            }
+
+            if (!cmd.Parameters.TryGetValue(GCodeRegistry.PARAM_P, out var pValue))
+            {
+                return false;
+            }
+
+            int pNumber = (int)pValue;
+            if (pNumber < 1 || pNumber > 6)
+            {
+                return false;
+            }
+
+            int systemNumber = 53 + pNumber;
+            double? x = cmd.Parameters.TryGetValue(GCodeRegistry.PARAM_X, out var px) ? px : null;
+            double? y = cmd.Parameters.TryGetValue(GCodeRegistry.PARAM_Y, out var py) ? py : null;
+            double? z = cmd.Parameters.TryGetValue(GCodeRegistry.PARAM_Z, out var pz) ? pz : null;
+            state.SetWorkOffset(systemNumber, x, y, z);
+            return true;
         }
 
         public static void ApplyGCodeToState(MachineState state, int number)

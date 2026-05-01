@@ -21,6 +21,8 @@ namespace CNCSS.Data
         public static readonly GCodeTemplate G3 = new(LETTER_G, 3, CommandModality.Modal);
         /// <summary>G4: Выдержка времени (пауза).</summary>
         public static readonly GCodeTemplate G4 = new(LETTER_G, 4, CommandModality.NonModal);
+        /// <summary>G10: Программная запись данных (offset/setting).</summary>
+        public static readonly GCodeTemplate G10 = new(LETTER_G, 10, CommandModality.NonModal);
 
         /// <summary>G20: Работа в дюймах.</summary>
         public static readonly GCodeTemplate G20 = new(LETTER_G, 20, CommandModality.Modal);
@@ -157,7 +159,7 @@ namespace CNCSS.Data
         /// <summary>Список всех поддерживаемых G-кодов.</summary>
         public static readonly GCodeTemplate[] AllGCodes =
         {
-            G0, G1, G2, G3, G4,
+            G0, G1, G2, G3, G4, G10,
             G20, G21, G90, G91,
             G17, G18, G19,
             G28, G30,
