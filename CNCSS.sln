@@ -1,20 +1,32 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 18
-VisualStudioVersion = 18.4.11612.150 stable
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CNCSS", "CNCSS.csproj", "{88B0531B-C5A7-048F-C5C0-17E8FDAE90C5}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CNCSS.GpuVerification", "CNCSS.GpuVerification\CNCSS.GpuVerification.csproj", "{5DE3A66F-FE8F-4736-BC98-E841EA786E51}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CNCSS.Tests", "CNCSS.Tests\CNCSS.Tests.csproj", "{775A0A34-BB5B-418B-8EF4-0BEF38A1776B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
-		Debug|Any CPU = Debug|Any CPU
-		Release|Any CPU = Release|Any CPU
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{88B0531B-C5A7-048F-C5C0-17E8FDAE90C5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{88B0531B-C5A7-048F-C5C0-17E8FDAE90C5}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{88B0531B-C5A7-048F-C5C0-17E8FDAE90C5}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{88B0531B-C5A7-048F-C5C0-17E8FDAE90C5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{88B0531B-C5A7-048F-C5C0-17E8FDAE90C5}.Debug|x64.ActiveCfg = Debug|x64
+		{88B0531B-C5A7-048F-C5C0-17E8FDAE90C5}.Debug|x64.Build.0 = Debug|x64
+		{88B0531B-C5A7-048F-C5C0-17E8FDAE90C5}.Release|x64.ActiveCfg = Release|x64
+		{88B0531B-C5A7-048F-C5C0-17E8FDAE90C5}.Release|x64.Build.0 = Release|x64
+		{5DE3A66F-FE8F-4736-BC98-E841EA786E51}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{5DE3A66F-FE8F-4736-BC98-E841EA786E51}.Debug|x64.Build.0 = Debug|Any CPU
+		{5DE3A66F-FE8F-4736-BC98-E841EA786E51}.Release|x64.ActiveCfg = Release|Any CPU
+		{5DE3A66F-FE8F-4736-BC98-E841EA786E51}.Release|x64.Build.0 = Release|Any CPU
+		{775A0A34-BB5B-418B-8EF4-0BEF38A1776B}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{775A0A34-BB5B-418B-8EF4-0BEF38A1776B}.Debug|x64.Build.0 = Debug|Any CPU
+		{775A0A34-BB5B-418B-8EF4-0BEF38A1776B}.Release|x64.ActiveCfg = Release|Any CPU
+		{775A0A34-BB5B-418B-8EF4-0BEF38A1776B}.Release|x64.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

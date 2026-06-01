@@ -1,8 +1,10 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using System.Windows.Media.Media3D;
 using CNCSS.UI.ViewModels;
 using CNCSS.Vis;
+using CNCSS.GpuVerification;
 
 namespace CNCSS.UI.Presenters
 {
@@ -13,24 +15,45 @@ namespace CNCSS.UI.Presenters
 
         public void ProcessCutStep(
             bool isDryRunEnabled,
-            VoxelStock? stock,
+            IStockVolume? stock,
             StockCutWorker? stockCutWorker,
-            CheckBox stockVisibleCheck,
             ToolViewModel? selectedTool,
             Point3D from,
-            Point3D to)
+            Point3D to,
+            GpuOccupancySession? gpuOccupancyProgramSession = null)
         {
-            if (isDryRunEnabled || stock == null || stockVisibleCheck.IsChecked != true || selectedTool == null)
+            if (isDryRunEnabled || stock == null || selectedTool == null)
             {
                 return;
             }
 
-            stockCutWorker?.EnqueueCut(from, to, selectedTool.Diameter / 2.0, selectedTool.FluteLength, selectedTool.FluteColor);
+            double radius = selectedTool.Diameter / 2.0;
+            if (stock is VoxelStock)
+            {
+                stock.CutCylinder(from, to, radius, selectedTool.FluteLength, selectedTool.FluteColor);
+                if (gpuOccupancyProgramSession != null)
+                {
+                    gpuOccupancyProgramSession.ApplyProgramCut(new GpuCylinderCut(
+                        from.X,
+                        from.Y,
+                        from.Z,
+                        to.X,
+                        to.Y,
+                        to.Z,
+                        radius,
+                        selectedTool.FluteLength));
+                }
+
+                return;
+            }
+
+            stockCutWorker?.EnqueueCut(from, to, radius, selectedTool.FluteLength, selectedTool.FluteColor);
         }
 
-        public bool ShouldRefreshStock(VoxelStock? stock, bool isStockUpdating, int minRefreshIntervalMs)
+        /// <summary>Нужно ли пересобрать меш заготовки (очередь обновлений сериализуется снаружи — здесь только троттлинг по времени).</summary>
+        public bool ShouldRefreshStock(IStockVolume? stock, int minRefreshIntervalMs)
         {
-            if (stock == null || isStockUpdating || !stock.IsDirty)
+            if (stock == null || !stock.IsDirty)
             {
                 return false;
             }
@@ -39,10 +62,11 @@ namespace CNCSS.UI.Presenters
         }
 
         public async Task RefreshStockVisualAsync(
-            VoxelStock stock,
+            IStockVolume stock,
             ModelVisual3D stockVisual,
             Border? stockProgressPanel,
-            bool showProgress)
+            bool showProgress,
+            bool stockShownInViewport)
         {
             if (showProgress && stockProgressPanel != null)
             {
@@ -50,12 +74,34 @@ namespace CNCSS.UI.Presenters
                 await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Render);
             }
 
-            await stock.UpdateVisualsAsync();
-            if (stockVisual.Content != stock.MainModel)
+            if (stock is VoxelStock voxelStock)
             {
-                stockVisual.Content = stock.MainModel;
+                await voxelStock.UpdateAllVisualsAsync();
+            }
+            else
+            {
+                await stock.UpdateVisualsAsync();
             }
 
+            if (Application.Current?.Dispatcher.CheckAccess() == true)
+            {
+                await Dispatcher.Yield(DispatcherPriority.Render);
+            }
+
+            if (stockShownInViewport)
+            {
+                if (stockVisual.Content != stock.MainModel)
+                {
+                    stockVisual.Content = stock.MainModel;
+                }
+            }
+            else
+            {
+                stockVisual.Content = null;
+            }
+
+            // Всегда двигаем время: иначе при повторных запросах интервал не обновляется
+            // и меш запрашивается почти каждый тик анимации.
             _lastStockUpdateTime = DateTime.Now;
             if (stockProgressPanel != null)
             {

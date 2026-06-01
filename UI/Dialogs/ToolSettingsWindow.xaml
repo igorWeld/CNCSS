@@ -16,83 +16,10 @@
         Background="#FFB0B0B0">
 
     <Window.Resources>
-        <SolidColorBrush x:Key="FanucProgDisplayBrush" Color="#FFD1D7DC"/>
-        <SolidColorBrush x:Key="FanucProgCyanBrush" Color="#FF5BB2C3"/>
-        <SolidColorBrush x:Key="FanucProgCyanBorderBrush" Color="#FF4A9EAF"/>
-
-        <LinearGradientBrush x:Key="KeyWhiteBrush" StartPoint="0,0" EndPoint="0,1">
-            <GradientStop Color="#FFFCFCFC" Offset="0"/>
-            <GradientStop Color="#FFE8E8E8" Offset="1"/>
-        </LinearGradientBrush>
-        <LinearGradientBrush x:Key="KeyBeigeBrush" StartPoint="0,0" EndPoint="0,1">
-            <GradientStop Color="#FFF0E4C7" Offset="0"/>
-            <GradientStop Color="#FFDCCCA1" Offset="1"/>
-        </LinearGradientBrush>
-
-        <Style x:Key="FanucKeyBaseStyle" TargetType="Button">
-            <Setter Property="Foreground" Value="#FF1A1A1A"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="4,2"/>
-            <Setter Property="HorizontalContentAlignment" Value="Center"/>
-            <Setter Property="VerticalContentAlignment" Value="Center"/>
-            <Setter Property="FontFamily" Value="Consolas"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Outer"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="5"
-                                SnapsToDevicePixels="True">
-                            <Grid>
-                                <Border Margin="1" CornerRadius="4" BorderBrush="#66FFFFFF" BorderThickness="1,1,1,0"/>
-                                <ContentPresenter Margin="{TemplateBinding Padding}"
-                                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
-                            </Grid>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Outer" Property="Opacity" Value="0.92"/>
-                            </Trigger>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Outer" Property="BorderBrush" Value="#FF9A9A9A"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style x:Key="FanucPanelButton" TargetType="Button" BasedOn="{StaticResource FanucKeyBaseStyle}">
-            <Setter Property="Background" Value="{StaticResource KeyWhiteBrush}"/>
-            <Setter Property="BorderBrush" Value="#FFB9B9B9"/>
-            <Setter Property="MinHeight" Value="30"/>
-            <Setter Property="FontSize" Value="12"/>
-        </Style>
-
-        <Style x:Key="FanucPanelButtonBeige" TargetType="Button" BasedOn="{StaticResource FanucKeyBaseStyle}">
-            <Setter Property="Background" Value="{StaticResource KeyBeigeBrush}"/>
-            <Setter Property="BorderBrush" Value="#FF9E947A"/>
-            <Setter Property="MinHeight" Value="30"/>
-            <Setter Property="FontSize" Value="11"/>
-        </Style>
-
-        <Style x:Key="FanucToolFieldTextBox" TargetType="TextBox">
-            <Setter Property="FontFamily" Value="Consolas"/>
-            <Setter Property="FontWeight" Value="Bold"/>
-            <Setter Property="FontSize" Value="12.5"/>
-            <Setter Property="Foreground" Value="#FF0F2A38"/>
-            <Setter Property="CaretBrush" Value="#FF0F2A38"/>
-            <Setter Property="Background" Value="#FFFFFFFF"/>
-            <Setter Property="BorderBrush" Value="#FF4A9EAF"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="4,3"/>
-            <Setter Property="VerticalContentAlignment" Value="Center"/>
-            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-        </Style>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/UI/Themes/FanucPanelResources.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
 
         <Style x:Key="FanucToolCombo" TargetType="ComboBox">
             <Setter Property="FontFamily" Value="Consolas"/>
@@ -102,13 +29,6 @@
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="4,3"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
-        </Style>
-
-        <Style x:Key="FanucLabelStyle" TargetType="TextBlock">
-            <Setter Property="FontFamily" Value="Consolas"/>
-            <Setter Property="Foreground" Value="#FF0F2A38"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
 
         <Style x:Key="FanucRemoveRowButtonStyle" TargetType="Button" BasedOn="{StaticResource FanucKeyBaseStyle}">
@@ -195,6 +115,20 @@
                                 <DockPanel Margin="0,0,12,6">
                                     <TextBlock DockPanel.Dock="Left" Width="168" Style="{StaticResource FanucLabelStyle}" Text="Число зубьев:"/>
                                     <TextBox Margin="14,0,0,0" Style="{StaticResource FanucToolFieldTextBox}" Text="{Binding FlutesText, UpdateSourceTrigger=PropertyChanged}"/>
+                                </DockPanel>
+                                <DockPanel Margin="0,0,12,6">
+                                    <DockPanel.Style>
+                                        <Style TargetType="DockPanel">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsDrillRow}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DockPanel.Style>
+                                    <TextBlock DockPanel.Dock="Left" Width="168" Style="{StaticResource FanucLabelStyle}" Text="Угол при вершине (°):"/>
+                                    <TextBox Margin="14,0,0,0" Style="{StaticResource FanucToolFieldTextBox}" Text="{Binding PointAngleText, UpdateSourceTrigger=PropertyChanged}"/>
                                 </DockPanel>
                                 <DockPanel Margin="0,0,12,2">
                                     <TextBlock DockPanel.Dock="Left"
@@ -286,19 +220,11 @@
                         Click="RemoveRowButton_Click"/>
             </Grid>
         </DataTemplate>
+        </ResourceDictionary>
     </Window.Resources>
 
-    <!-- Безель как у стойки FANUC -->
-    <Border Margin="14" Padding="10,8,10,7"
-            Background="#FF878787"
-            BorderBrush="#FF656565"
-            BorderThickness="2"
-            CornerRadius="0">
-
-        <Border Background="#FF929292"
-                BorderBrush="#FF5C5C5C"
-                BorderThickness="2"
-                Padding="8,7,8,6">
+    <Border Style="{StaticResource FanucBezelOuter}">
+        <Border Style="{StaticResource FanucBezelInner}">
 
             <Grid>
                 <Grid.RowDefinitions>
@@ -393,9 +319,10 @@
                             ToolTip="Добавить инструмент (черновые значения задаются здесь до «Применить»)."
                             Click="NewToolButton_Click"/>
 
-                    <Button MinWidth="120"
+                    <Button x:Name="ApplyButton"
+                            MinWidth="120"
                             Margin="0,6,6,6"
-                            Style="{StaticResource FanucPanelButtonBeige}"
+                            Style="{StaticResource ApplyToolChangesButton}"
                             Content="Применить"
                             IsDefault="True"
                             Click="ApplyButton_Click"/>

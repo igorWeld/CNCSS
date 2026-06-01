@@ -29,6 +29,9 @@ namespace CNCSS.Simulation.Execution
         private readonly List<ParsedCommand> _commands = new();
         private bool _singleBlockEnabled;
         private bool _optionalStopEnabled;
+        private double _homeX;
+        private double _homeY;
+        private double _homeZ;
         private int _singleBlockStopCommandIndex = -1;
         private bool _pendingHomeReturnStage2;
         private int _pendingHomeReturnCommandIndex = -1;
@@ -42,6 +45,17 @@ namespace CNCSS.Simulation.Execution
         public void SetSingleBlock(bool enabled) => _singleBlockEnabled = enabled;
         public void SetOptionalStop(bool enabled) => _optionalStopEnabled = enabled;
 
+        /// <summary>
+        /// Sets the physical HOME target from the machine profile (per-axis HOME in MCS + McsZeroOffset).
+        /// Used for G28 and M6 retracts instead of global constants.
+        /// </summary>
+        public void SetHomeTarget(double x, double y, double z)
+        {
+            _homeX = x;
+            _homeY = y;
+            _homeZ = z;
+        }
+
         public void LoadProgram(IReadOnlyList<ParsedCommand> commands)
         {
             _commands.Clear();
@@ -49,18 +63,7 @@ namespace CNCSS.Simulation.Execution
             _blocks.Clear();
             foreach (var cmd in commands)
             {
-                var kind = MotionBlockKind.Auxiliary;
-                if (cmd.GCodes.Any(g => g.Number == 0)) kind = MotionBlockKind.Rapid;
-                else if (cmd.GCodes.Any(g => g.Number == 1)) kind = MotionBlockKind.Linear;
-                else if (cmd.GCodes.Any(g => g.Number is 2 or 3)) kind = MotionBlockKind.Arc;
-                else if (cmd.MCodes.Any(m => m.Number == 6)) kind = MotionBlockKind.ToolChange;
-
-                _blocks.Add(new MotionBlock
-                {
-                    LineNumber = cmd.LineNumber,
-                    Kind = kind,
-                    RawLine = cmd.RawLine
-                });
+                _blocks.Add(MotionBlockFactory.FromParsedCommand(cmd));
             }
 
             _currentCommandIndex = _commands.Count > 0 ? 0 : -1;
@@ -125,9 +128,9 @@ namespace CNCSS.Simulation.Execution
                     HasMove = true,
                     NextIndex = uiIndex,
                     BlockKind = MotionBlockKind.Rapid,
-                    TargetX = MachineState.HOME_X,
-                    TargetY = MachineState.HOME_Y,
-                    TargetZ = MachineState.HOME_Z
+                    TargetX = _homeX,
+                    TargetY = _homeY,
+                    TargetZ = _homeZ
                 };
             }
 
@@ -137,14 +140,7 @@ namespace CNCSS.Simulation.Execution
                 if (_commands.Count > 0 && _currentCommandIndex >= 0 && _currentCommandIndex < _commands.Count)
                 {
                     var finalCommand = _commands[_currentCommandIndex];
-                    if (finalCommand.MCodes.Any(m => m.Number == 30))
-                    {
-                        endMCode = 30;
-                    }
-                    else if (finalCommand.MCodes.Any(m => m.Number == 2))
-                    {
-                        endMCode = 2;
-                    }
+                    endMCode = MotionBlockFactory.FromParsedCommand(finalCommand).EndProgramMCode;
                 }
 
                 return new ProgramMoveDecision
@@ -162,7 +158,7 @@ namespace CNCSS.Simulation.Execution
             int nextUiIndex = Math.Max(0, cmd.LineNumber - 1);
             _bus.Publish(new ProgramLineExecutedEvent(cmd.LineNumber, DateTime.UtcNow));
 
-            if (_optionalStopEnabled && cmd.MCodes.Any(m => m.Number == 1))
+            if (_optionalStopEnabled && block.IsOptionalStop)
             {
                 return new ProgramMoveDecision
                 {
@@ -173,7 +169,7 @@ namespace CNCSS.Simulation.Execution
             }
 
             bool isHomeReturnLike = cmd.GCodes.Any(g => g.Number == 28) || cmd.MCodes.Any(m => m.Number == 6);
-            bool needZFirst = isHomeReturnLike && Math.Abs(currentZ - MachineState.HOME_Z) > 0.001;
+            bool needZFirst = isHomeReturnLike && Math.Abs(currentZ - _homeZ) > 0.001;
 
             if (needZFirst)
             {
@@ -186,7 +182,7 @@ namespace CNCSS.Simulation.Execution
                     BlockKind = block.Kind,
                     TargetX = currentX,
                     TargetY = currentY,
-                    TargetZ = MachineState.HOME_Z
+                    TargetZ = _homeZ
                 };
             }
 
@@ -197,9 +193,9 @@ namespace CNCSS.Simulation.Execution
                     HasMove = true,
                     NextIndex = nextUiIndex,
                     BlockKind = block.Kind,
-                    TargetX = MachineState.HOME_X,
-                    TargetY = MachineState.HOME_Y,
-                    TargetZ = MachineState.HOME_Z
+                    TargetX = _homeX,
+                    TargetY = _homeY,
+                    TargetZ = _homeZ
                 };
             }
 
@@ -208,9 +204,9 @@ namespace CNCSS.Simulation.Execution
                 HasMove = true,
                 NextIndex = nextUiIndex,
                 BlockKind = block.Kind,
-                TargetX = cmd.EndState.X,
-                TargetY = cmd.EndState.Y,
-                TargetZ = cmd.EndState.Z
+                TargetX = block.TargetX,
+                TargetY = block.TargetY,
+                TargetZ = block.TargetZ
             };
         }
     }

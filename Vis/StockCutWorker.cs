@@ -12,14 +12,16 @@ namespace CNCSS.Vis
     /// </summary>
     public sealed class StockCutWorker : IDisposable
     {
-        private readonly VoxelStock _stock;
+        private readonly IStockVolume _stock;
+        private readonly double _cutStepMm;
         private readonly Channel<CutRequest> _channel;
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private readonly Task _workerTask;
 
-        public StockCutWorker(VoxelStock stock)
+        public StockCutWorker(IStockVolume stock, double cutStepMm)
         {
             _stock = stock ?? throw new ArgumentNullException(nameof(stock));
+            _cutStepMm = Math.Max(0.05, cutStepMm);
             _channel = Channel.CreateUnbounded<CutRequest>(new UnboundedChannelOptions
             {
                 SingleReader = true,
@@ -38,8 +40,21 @@ namespace CNCSS.Vis
         {
             try
             {
-                await foreach (var req in _channel.Reader.ReadAllAsync(_cts.Token))
-                    ExecuteCut(req);
+                var reader = _channel.Reader;
+                while (await reader.WaitToReadAsync(_cts.Token))
+                {
+                    while (reader.TryRead(out CutRequest req))
+                    {
+                        try
+                        {
+                            ExecuteCut(req);
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[StockCutWorker] Cut failed: {ex.Message}");
+                        }
+                    }
+                }
             }
             catch (OperationCanceledException)
             {
@@ -53,7 +68,8 @@ namespace CNCSS.Vis
             if (length <= 1e-9)
                 return;
 
-            double stepDist = Math.Max(0.1, req.Radius);
+            // Крупнее шаг — меньше захватов write-lock в VoxelStock; длинный проход режется профилем (мм).
+            double stepDist = Math.Max(req.Radius * 0.15, Math.Max(_cutStepMm, 0.05));
             int steps = (int)Math.Ceiling(length / stepDist);
             if (steps <= 1)
             {

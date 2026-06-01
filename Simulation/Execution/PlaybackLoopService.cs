@@ -34,6 +34,8 @@ namespace CNCSS.Simulation.Execution
         private double _progress = 1.0;
         private ArcGeometry? _currentArc;
 
+        public bool IsSegmentInProgress => _progress < 1.0;
+
         public PlaybackLoopService(ProgramExecutionService programExecutionService)
         {
             _programExecutionService = programExecutionService;

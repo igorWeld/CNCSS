@@ -54,5 +54,38 @@ namespace CNCSS.UI.Dialogs
 
             return group;
         }
+
+        public static Model3DGroup BuildDrillTool(
+            double fluteRadius,
+            double shankRadius,
+            double fluteLength,
+            double overallLength,
+            double pointAngleDegrees,
+            Color fluteColor,
+            Color shankColor)
+        {
+            fluteLength = Math.Max(1e-3, fluteLength);
+            overallLength = Math.Max(fluteLength, overallLength);
+
+            var group = new Model3DGroup();
+
+            MeshGeometry3D fluteMesh = ToolShapeMesh.BuildDrillCuttingMesh(fluteRadius, fluteLength, pointAngleDegrees);
+            Material fluteMat = MaterialHelper.CreateMaterial(fluteColor);
+            group.Children.Add(new GeometryModel3D(fluteMesh, fluteMat) { BackMaterial = fluteMat });
+
+            var shankBuilder = new MeshBuilder();
+            shankBuilder.AddCylinder(
+                new Point3D(0, 0, fluteLength),
+                new Point3D(0, 0, overallLength),
+                shankRadius,
+                16,
+                true,
+                true);
+
+            Material shMat = MaterialHelper.CreateMaterial(shankColor);
+            group.Children.Add(new GeometryModel3D(shankBuilder.ToMesh(), shMat) { BackMaterial = shMat });
+
+            return group;
+        }
     }
 }

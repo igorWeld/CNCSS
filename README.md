@@ -12,9 +12,16 @@ dotnet build -c Release
 dotnet run -c Release --project CNCSS.csproj
 ```
 
+Минимальная проверка перед изменениями:
+
+```powershell
+dotnet test -c Release
+```
+
 - **Платформа:** Windows (`net8.0-windows`).
 - **SDK:** .NET 8 или новее.
 - Образцы УП `O0001.nc`, `O1204.nc` при сборке копируются в выходной каталог (`PreserveNewest`).
+- Smoke-сценарий и правила разработки описаны в `DEVELOPMENT.md`.
 
 ### Особенность проекта (WinForms)
 
@@ -38,12 +45,13 @@ dotnet run -c Release --project CNCSS.csproj
 | Папка | Назначение |
 |-------|------------|
 | **Data** | `MachineState`, `ParsedCommand`, `GCodeRegistry`, `GCodeTemplate`, `ArcGeometry`, `ProjectConstants`, инструменты `Tools/*` (`ITool`, фрезы/сверло). |
-| **Logic** | `GCodeParser` / `IGCodeParser`, `CommandReplayer`, `ArcCalculator`. |
+| **Logic** | `GCodeParser` / `IGCodeParser`, `CommandReplayer`, `ArcCalculator`, `ProgramLoader`, `ProgramLoading/ProgramLoadResult`. |
 | **Machine** | `IMachineCore`, `MachineCore` — ось X/Y/Z и реакция на команды контроллера; `Machine.Model` (`MachineAxesState`, `MotionBlock`). |
 | **Controller** | `IControllerCore`, `ControllerCore` — цикл, режимы, jog, MDI; модель `ControllerMode`. |
-| **Simulation** | `Simulation.Bus` — `ISimulationBus`, `SimulationBus`, события (`MachineStateChangedEvent`, …). `Simulation.Execution` — шаг УП, интерполяция, `PlaybackLoopService`, `ProgramExecutionService`, `ProgramStateService`, `InterpolationService`. |
-| **Vis** | `ToolpathBuilder`, `VoxelStock`, `StockCutWorker`, `VoxelSimulationProfile`, `IVisualizer`. |
-| **UI** | `MainWindow`, `FanucPanel`, `OperatorStation`, презентеры (`UiRenderService`, `ToolpathRenderService`, `StockRenderService`), `MainPresenter`, ViewModels, диалоги инструментов, `RelayCommand`. |
+| **Simulation** | `Simulation.Bus` — `ISimulationBus`, `SimulationBus`, события (`MachineStateChangedEvent`, …). `Simulation.Execution` — шаг УП, интерполяция, `ProgramWorkspace`, `CycleCoordinator`, `PlaybackLoopService`, `ProgramExecutionService`, `ProgramStateService`, `InterpolationService`. |
+| **Vis** | `ToolpathBuilder`, `VoxelStock`, `StockCutWorker`, `StockSimulationCoordinator`, `VoxelSimulationProfile`, `Configuration/FinalStockSettings`, `IVisualizer`. |
+| **UI** | `MainWindow`, `FanucPanel`, `OperatorStation`, `Configuration/UiLayoutConstants`, презентеры (`UiRenderService`, `ToolpathRenderService`, `StockRenderService`), `MainPresenter`, ViewModels, диалоги инструментов, `RelayCommand`. |
+| **Infrastructure** | Composition root приложения (`Infrastructure/Composition/AppCompositionRoot`) — сборка зависимостей ядра и презентеров. |
 
 Поток данных в общих чертах: **парсер → команды и состояния → построение траектории и движений → шина событий ↔ ядро станка/контроллер → MainWindow обновляет Helix и панели.**
 
@@ -56,6 +64,7 @@ dotnet run -c Release --project CNCSS.csproj
 - Визуализация: пересчёт изменённых чанков, greedy meshing по внешней поверхности (см. также комментарии и профиль в `Vis`).
 
 Разрешение сетки задаётся пользователем (константы высокой/средней/грубой сетки — `ProjectConstants`).
+`VoxelSimulationProfile` задаёт runtime-профиль качества (`high`, `medium`, `coarse`) и бюджеты обновления, а `VoxelPerformanceMonitor` пишет в debug output длительность пересборки меша.
 
 ---
 

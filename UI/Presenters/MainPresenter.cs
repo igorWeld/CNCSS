@@ -1,11 +1,10 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
+using System.IO;
 using System.Windows.Media.Media3D;
-using CNCSS.Logic;
-using CNCSS.UI.Views;
 using CNCSS.Data;
-using CNCSS.UI.ViewModels;
+using CNCSS.Logic.ProgramLoading;
+using CNCSS.Simulation.Execution;
+using CNCSS.Vis;
+using CNCSS.UI.Views;
 
 namespace CNCSS.UI.Presenters
 {
@@ -13,73 +12,58 @@ namespace CNCSS.UI.Presenters
     /// Презентер для главного окна.
     /// Управляет логикой взаимодействия между моделью (парсером) и представлением.
     /// </summary>
-    public class MainPresenter
+    public sealed class MainPresenter
     {
         private readonly IMainView _view;
-        private readonly IGCodeParser _parser;
-        private List<ParsedCommand> _commands = new();
+        private readonly CycleCoordinator _cycleCoordinator;
+        private readonly ProgramLoadOrchestrator _programLoadOrchestrator;
 
-        /// <summary>
-        /// Инициализирует новый экземпляр презентера.
-        /// </summary>
-        /// <param name="view">Интерфейс представления.</param>
-        /// <param name="parser">Интерфейс парсера G-кода.</param>
-        public MainPresenter(IMainView view, IGCodeParser parser)
+        public MainPresenter(
+            IMainView view,
+            ProgramLoadOrchestrator programLoadOrchestrator,
+            CycleCoordinator cycleCoordinator)
         {
             _view = view ?? throw new ArgumentNullException(nameof(view));
-            _parser = parser ?? throw new ArgumentNullException(nameof(parser));
+            _programLoadOrchestrator = programLoadOrchestrator ?? throw new ArgumentNullException(nameof(programLoadOrchestrator));
+            _cycleCoordinator = cycleCoordinator ?? throw new ArgumentNullException(nameof(cycleCoordinator));
         }
 
-        /// <summary>
-        /// Загружает и обрабатывает файл G-кода.
-        /// </summary>
-        /// <param name="filePath">Путь к файлу.</param>
-        public void LoadGCode(string filePath)
+        public ToolpathSceneBuildResult LoadProgram(string filePath)
         {
             try
             {
-                _parser.ProcessFile(filePath);
-                _commands = _parser.Commands;
-                
-                var lines = System.IO.File.ReadAllLines(filePath);
-                _view.SetGCodeLines(lines);
+                var result = _programLoadOrchestrator.Load(filePath);
+                _view.BindProgram(result.LoadResult);
+                _view.SetStatus($"Program loaded: {Path.GetFileName(result.LoadResult.FullPath)}");
+                return result;
             }
             catch (Exception ex)
             {
                 _view.ShowError($"Ошибка при загрузке файла: {ex.Message}");
+                throw;
             }
         }
 
-        /// <summary>
-        /// Обрабатывает выбор строки в списке G-кода.
-        /// </summary>
-        /// <param name="index">Индекс выбранной строки.</param>
         public void OnLineSelected(int index)
         {
-            if (index < 0 || index >= _commands.Count) return;
-
-            var command = _commands.FirstOrDefault(c => c.LineNumber == index + 1);
-            if (command != null)
+            var state = _programLoadOrchestrator.Workspace.GetStateAtUiLine(index + 1);
+            if (state != null)
             {
-                var state = command.EndState;
-                _view.UpdateToolPosition(new Point3D(state.X, state.Y, state.Z));
+                _view.ApplyLineState(state);
             }
         }
 
-        /// <summary>
-        /// Запускает симуляцию обработки.
-        /// </summary>
-        public void StartSimulation()
+        public void Reset(Point3D homePosition)
         {
-            // Логика запуска таймера или цикла симуляции
+            _cycleCoordinator.Reset(homePosition);
+            _view.SelectProgramLine(0);
+            _view.SetCycleButtons(canStart: true, canPause: false);
         }
 
-        /// <summary>
-        /// Останавливает симуляцию.
-        /// </summary>
-        public void StopSimulation()
+        public void ClearProgram()
         {
-            // Логика остановки
+            _programLoadOrchestrator.Workspace.Clear();
+            _view.ClearProgramView();
         }
     }
 }

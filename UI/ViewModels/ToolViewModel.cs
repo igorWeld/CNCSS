@@ -15,7 +15,7 @@ namespace CNCSS.UI.ViewModels
         private double _fluteLength = 30.0;
         private double _overallLength = 75.0;
         private int _flutes = 2;
-        private double _pointAngle = 118.0;
+        private double _pointAngle = 120.0;
         private ToolType _selectedType = ToolType.EndMill;
         private Color _fluteColor = Colors.Goldenrod;
 
@@ -75,11 +75,21 @@ namespace CNCSS.UI.ViewModels
         public ToolType SelectedType
         {
             get => _selectedType;
-            set 
-            { 
-                _selectedType = value; 
-                OnPropertyChanged(); 
-                OnPropertyChanged(nameof(IsDrill)); 
+            set
+            {
+                var prev = _selectedType;
+                _selectedType = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(IsDrill));
+
+                if (value == ToolType.FaceMill && prev != ToolType.FaceMill)
+                {
+                    Diameter = 30;
+                    ShankDiameter = 28;
+                    FluteLength = 10;
+                    OverallLength = 75;
+                    Flutes = 5;
+                }
             }
         }
 

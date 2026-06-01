@@ -1,6 +1,7 @@
 using System.Windows.Media.Media3D;
 using CNCSS.Data;
 using CNCSS.Logic;
+using CNCSS.Machine.Model;
 
 namespace CNCSS.Vis
 {
@@ -30,11 +31,18 @@ namespace CNCSS.Vis
     {
         private const double PosEps = 1e-6;
 
-        public static List<ToolpathSegmentWithLine> BuildWithLineNumbers(GCodeParser parser)
+        public static List<ToolpathSegmentWithLine> BuildWithLineNumbers(
+            GCodeParser parser,
+            MachineState? initialState = null,
+            MachineDefinition? machine = null,
+            double toolStickOutMm = 0)
         {
+            var projection = new ToolpathPointProjection(machine, toolStickOutMm);
             var list = new List<ToolpathSegmentWithLine>();
             var cmds = parser.Commands;
-            var tempParser = new GCodeParser();
+            var tempParser = initialState != null
+                ? new GCodeParser(initialState.Clone())
+                : new GCodeParser();
 
             foreach (var cmd in cmds)
             {
@@ -51,7 +59,6 @@ namespace CNCSS.Vis
                 if (cmd.GCodes.Any(g => g.Number == 28) || cmd.MCodes.Any(m => m.Number == 6))
                 {
                     // Специальная обработка G28/M6: сначала Z, потом XY
-                    // 1. Движение по Z
                     if (Math.Abs(z1 - z0) > PosEps)
                     {
                         list.Add(new ToolpathSegmentWithLine
@@ -59,12 +66,14 @@ namespace CNCSS.Vis
                             Segment = new ToolpathSegment
                             {
                                 Kind = ToolpathSegmentKind.Rapid,
-                                Points = new[] { new Point3D(x0, y0, z0), new Point3D(x0, y0, z1) }
+                                Points = projection.Map(
+                                    new Point3D(x0, y0, z0),
+                                    new Point3D(x0, y0, z1))
                             },
                             LineNumber = cmd.LineNumber
                         });
                     }
-                    // 2. Движение по XY
+
                     if (Math.Abs(x1 - x0) > PosEps || Math.Abs(y1 - y0) > PosEps)
                     {
                         list.Add(new ToolpathSegmentWithLine
@@ -72,23 +81,28 @@ namespace CNCSS.Vis
                             Segment = new ToolpathSegment
                             {
                                 Kind = ToolpathSegmentKind.Rapid,
-                                Points = new[] { new Point3D(x0, y0, z1), new Point3D(x1, y1, z1) }
+                                Points = projection.Map(
+                                    new Point3D(x0, y0, z1),
+                                    new Point3D(x1, y1, z1))
                             },
                             LineNumber = cmd.LineNumber
                         });
                     }
+
                     continue;
                 }
 
-                if (Math.Abs(x1 - x0) > PosEps || Math.Abs(y1 - y0) > PosEps || Math.Abs(z1 - z0) > PosEps)                {
-                    var p0 = new Point3D(x0, y0, z0);
-                    var p1 = new Point3D(x1, y1, z1);
-
+                if (Math.Abs(x1 - x0) > PosEps || Math.Abs(y1 - y0) > PosEps || Math.Abs(z1 - z0) > PosEps)
+                {
                     ToolpathSegment seg;
-                    if (cmd.Arc != null)
+                    var arc = TryRecomputeArc(tempParser, cmd, x0, y0, z0, x1, y1, z1);
+                    if (arc != null)
                     {
-                        var pts = SampleArc(cmd.Arc);
-                        seg = new ToolpathSegment { Kind = ToolpathSegmentKind.Arc, Points = pts };
+                        seg = new ToolpathSegment
+                        {
+                            Kind = ToolpathSegmentKind.Arc,
+                            Points = projection.Map(SampleArc(arc))
+                        };
                     }
                     else
                     {
@@ -99,7 +113,9 @@ namespace CNCSS.Vis
                         seg = new ToolpathSegment
                         {
                             Kind = kind,
-                            Points = new[] { p0, p1 }
+                            Points = projection.Map(
+                                new Point3D(x0, y0, z0),
+                                new Point3D(x1, y1, z1))
                         };
                     }
 
@@ -114,59 +130,64 @@ namespace CNCSS.Vis
             return list;
         }
 
-        public static List<ToolpathSegment> Build(IEnumerable<ParsedCommand> commands)        {
+        public static List<ToolpathSegment> Build(
+            IEnumerable<ParsedCommand> commands,
+            MachineState? initialState = null,
+            MachineDefinition? machine = null,
+            double toolStickOutMm = 0)
+        {
+            var projection = new ToolpathPointProjection(machine, toolStickOutMm);
             var list = new List<ToolpathSegment>();
             var cmds = commands.ToList();
-            var parser = new GCodeParser(); // Временный парсер для отслеживания состояния
+            var parser = initialState != null
+                ? new GCodeParser(initialState.Clone())
+                : new GCodeParser();
 
             foreach (var cmd in cmds)
             {
-                // Сохраняем позицию ДО выполнения команды
                 double x0 = parser.State.X;
                 double y0 = parser.State.Y;
                 double z0 = parser.State.Z;
 
-                // Выполняем команду
                 CommandReplayer.ReplayCommand(parser, cmd);
 
-                // Позиция ПОСЛЕ выполнения команды
                 double x1 = parser.State.X;
                 double y1 = parser.State.Y;
                 double z1 = parser.State.Z;
 
                 if (cmd.GCodes.Any(g => g.Number == 28) || cmd.MCodes.Any(m => m.Number == 6))
                 {
-                    // Специальная обработка G28/M6: сначала Z, потом XY
-                    // 1. Движение по Z
                     if (Math.Abs(z1 - z0) > PosEps)
                     {
                         list.Add(new ToolpathSegment
                         {
                             Kind = ToolpathSegmentKind.Rapid,
-                            Points = new[] { new Point3D(x0, y0, z0), new Point3D(x0, y0, z1) }
+                            Points = projection.Map(
+                                new Point3D(x0, y0, z0),
+                                new Point3D(x0, y0, z1))
                         });
                     }
-                    // 2. Движение по XY
+
                     if (Math.Abs(x1 - x0) > PosEps || Math.Abs(y1 - y0) > PosEps)
                     {
                         list.Add(new ToolpathSegment
                         {
                             Kind = ToolpathSegmentKind.Rapid,
-                            Points = new[] { new Point3D(x0, y0, z1), new Point3D(x1, y1, z1) }
+                            Points = projection.Map(
+                                new Point3D(x0, y0, z1),
+                                new Point3D(x1, y1, z1))
                         });
                     }
+
                     continue;
                 }
 
-                // Если позиция изменилась
                 if (Math.Abs(x1 - x0) > PosEps || Math.Abs(y1 - y0) > PosEps || Math.Abs(z1 - z0) > PosEps)
                 {
-                    var p0 = new Point3D(x0, y0, z0);
-                    var p1 = new Point3D(x1, y1, z1);
-
-                    if (cmd.Arc != null)
+                    var arc = TryRecomputeArc(parser, cmd, x0, y0, z0, x1, y1, z1);
+                    if (arc != null)
                     {
-                        var pts = SampleArc(cmd.Arc);
+                        var pts = projection.Map(SampleArc(arc));
                         if (pts.Length >= 2)
                         {
                             list.Add(new ToolpathSegment { Kind = ToolpathSegmentKind.Arc, Points = pts });
@@ -181,16 +202,82 @@ namespace CNCSS.Vis
                     list.Add(new ToolpathSegment
                     {
                         Kind = kind,
-                        Points = new[] { p0, p1 }
+                        Points = projection.Map(
+                            new Point3D(x0, y0, z0),
+                            new Point3D(x1, y1, z1))
                     });
                 }
             }
 
             return list;
         }
+
+        private readonly struct ToolpathPointProjection
+        {
+            private readonly MachineDefinition? _machine;
+            private readonly double _toolStickOutMm;
+
+            public ToolpathPointProjection(MachineDefinition? machine, double toolStickOutMm)
+            {
+                _machine = machine;
+                _toolStickOutMm = toolStickOutMm;
+            }
+
+            public Point3D[] Map(params Point3D[] axisPhysicalPoints)
+            {
+                if (_machine == null)
+                {
+                    return axisPhysicalPoints;
+                }
+
+                var mapped = new Point3D[axisPhysicalPoints.Length];
+                for (int i = 0; i < axisPhysicalPoints.Length; i++)
+                {
+                    Point3D p = axisPhysicalPoints[i];
+                    mapped[i] = KinematicChainSolver.ComputeToolCenterPoint(
+                        _machine,
+                        p.X,
+                        p.Y,
+                        p.Z,
+                        _toolStickOutMm);
+                }
+
+                return mapped;
+            }
+        }
+
+        private static ArcGeometry? TryRecomputeArc(
+            GCodeParser parser,
+            ParsedCommand cmd,
+            double x0, double y0, double z0,
+            double x1, double y1, double z1)
+        {
+            // Do not trust cmd.Arc: it might be stale if WCS/MCS offsets changed after parsing.
+            // Recompute using the parser's current modal plane/motion and the replayed start/end.
+            if (!GCodeRegistry.IsArcCode(parser.State.CurrentMotionMode))
+            {
+                return null;
+            }
+
+            bool hasArcData = cmd.I.HasValue || cmd.J.HasValue || cmd.K.HasValue || cmd.R.HasValue;
+            if (!hasArcData)
+            {
+                return null;
+            }
+
+            return ArcCalculator.TryComputeArc(
+                x0, y0, z0,
+                x1, y1, z1,
+                parser.State.CurrentPlane,
+                parser.State.CurrentMotionMode.Number == 2,
+                cmd.I, cmd.J, cmd.K, cmd.R,
+                out ArcGeometry? arc)
+                ? arc
+                : null;
+        }
         public static List<ToolpathSegment> Build(GCodeParser parser)
         {
-            return Build(parser.Commands);
+            return Build(parser.Commands, null);
         }
         private static bool HasMoved(MachineState a, MachineState b)
         {

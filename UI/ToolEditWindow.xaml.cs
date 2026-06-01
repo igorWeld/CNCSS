@@ -19,6 +19,7 @@ namespace CNCSS.UI
 
             TypeCombo.ItemsSource = Enum.GetValues(typeof(ToolType));
             TypeCombo.SelectedItem = _tool.SelectedType;
+            TypeCombo.SelectionChanged += TypeCombo_SelectionChanged;
 
             NumberInput.Text = _tool.Number.ToString();
             DiameterInput.Text = _tool.Diameter.ToString(CultureInfo.InvariantCulture);
@@ -27,6 +28,20 @@ namespace CNCSS.UI
             TotalLengthInput.Text = _tool.OverallLength.ToString(CultureInfo.InvariantCulture);
             FlutesInput.Text = _tool.Flutes.ToString();
             PointAngleInput.Text = _tool.PointAngle.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private void TypeCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+        {
+            if (TypeCombo.SelectedItem is not ToolType type || type != ToolType.FaceMill)
+            {
+                return;
+            }
+
+            DiameterInput.Text = "30";
+            ShankDiameterInput.Text = "28";
+            FluteLengthInput.Text = "10";
+            TotalLengthInput.Text = "75";
+            FlutesInput.Text = "5";
         }
 
         private void Save_Click(object sender, RoutedEventArgs e)

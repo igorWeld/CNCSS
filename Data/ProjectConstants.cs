@@ -1,14 +1,12 @@
-namespace CNCSS.Data
+﻿namespace CNCSS.Data
 {
     /// <summary>
     /// Глобальные константы проекта CNCSS.
     /// </summary>
     public static class ProjectConstants
     {
-        // Параметры станка по умолчанию
-        public const double DEFAULT_HOME_X = 255.0;
-        public const double DEFAULT_HOME_Y = 255.0;
-        public const double DEFAULT_HOME_Z = 255.0;
+        /// <summary>Устаревшая физическая HOME по умолчанию (до MCS); только для миграции профилей.</summary>
+        public const double LEGACY_DEFAULT_PHYSICAL_HOME = 255.0;
         public const double DEFAULT_RAPID_FEED = 5000.0;
 
         // Параметры воксельной модели
@@ -16,9 +14,12 @@ namespace CNCSS.Data
         public const int VOXEL_DATA_LENGTH = 512; // (32*32*32) / 64
 
         // Настройки визуализации (разрешение)
-        public const double RES_HIGH = 0.1;
+        public const double RES_HIGH = 0.01;
         public const double RES_MEDIUM = 0.3;
         public const double RES_COARSE = 0.6;
+
+        /// <summary>Единственный шаг сетки заготовки при рантайм-симуляции (мм).</summary>
+        public const double STOCK_VOXEL_RESOLUTION_MM = 0.1;
 
         // Параметры отрисовки
         public const int TOOL_CYLINDER_DIVISIONS = 20;
@@ -30,3 +31,4 @@ namespace CNCSS.Data
         public const double DEFAULT_OVERRIDE_PERCENT = 100.0;
     }
 }
+

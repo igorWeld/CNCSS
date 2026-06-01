@@ -11,20 +11,28 @@ using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using CNCSS.Logic.NcPrograms;
+using CNCSS.Machine.Model;
 
 namespace CNCSS.UI.FanucPanel
 {
     /// <summary>Визуальный блок пульта FANUC: страницы POS/PROG, аварии, офсеты, программное редактирование и привязка к событиям станка.</summary>
     public partial class FanucPanelControl : UserControl
     {
+        public enum OffsetToolColumn
+        {
+            GeomH = 1,
+            WearH = 2,
+            GeomD = 3,
+            WearD = 4
+        }
         private enum FanucPage
         {
             Pos,
             Prog,
             Alarm,
-            Diagn,
+            CustomGrph,
             Offset,
-            Setting,
             System
         }
         private enum ProgSubPage
@@ -39,6 +47,14 @@ namespace CNCSS.UI.FanucPanel
             CurrentMessage,
             UserActionHistory,
             SessionAlarmHistory
+        }
+
+        /// <summary>Подэкраны раздела OFFSET/SETTING (кнопка OFS SET).</summary>
+        private enum OffsetSubPage
+        {
+            ToolOffset,
+            Setting,
+            Work
         }
 
         public event Action? CycleStartRequested;
@@ -59,7 +75,24 @@ namespace CNCSS.UI.FanucPanel
         public event Action<int, double?, double?, double?>? OffsetUpdateRequested;
         public event Action<int>? OffsetSystemSelectionChangedRequested;
         public event Action? OffsetReadActiveToEditorRequested;
+        public event Action<int, OffsetToolColumn, double, bool>? OffsetToolValueUpdateRequested;
         private FanucPage _currentPage = FanucPage.Pos;
+        private OffsetSubPage _offsetSubPage = OffsetSubPage.ToolOffset;
+        private bool _offsetOprtMenuActive;
+        // Per reference: OFFSET/WORK use OPRT menus; typing does not auto-switch softkeys here.
+        private int _offsetToolSelectedRow = 1; // 1..8
+        private int _offsetToolSelectedCol = 1; // 1..4 (GEOM(H), WEAR(H), GEOM(D), WEAR(D))
+        private int _offsetToolPageStartRow = 1; // 1, 9, 17, 25
+        private const int OffsetToolTotalRows = 30;
+        private const int OffsetToolRowsPerPage = 8;
+        private string _offsetInputBuffer = string.Empty;
+        private Border[,]? _offsetToolCellBorders;
+        private TextBlock[,]? _offsetToolCellTexts;
+        private TextBlock[]? _offsetToolRowLabels;
+        private readonly double[,] _offsetToolValues = new double[OffsetToolTotalRows + 1, 5]; // [1..30, 1..4]
+        private int _offsetWorkSelectedSystem; // 0..3 => EXT,G54,G55,G56
+        private int _offsetWorkSelectedAxis;   // 0..2 => X,Y,Z
+        private Border[]? _offsetWorkCells;    // system*3 + axis
         private double _jogStep = 1.0;
         private MessageSubPage _messageSubPage = MessageSubPage.CurrentMessage;
         private int _messageSoftKeyCarouselIndex;
@@ -92,6 +125,15 @@ namespace CNCSS.UI.FanucPanel
         private double _loadedOffsetX;
         private double _loadedOffsetY;
         private double _loadedOffsetZ;
+        private double _lastPhysicalX;
+        private double _lastPhysicalY;
+        private double _lastPhysicalZ;
+        private double _machineZeroOffsetX;
+        private double _machineZeroOffsetY;
+        private double _machineZeroOffsetZ;
+        private double _activeWorkOffsetX;
+        private double _activeWorkOffsetY;
+        private double _activeWorkOffsetZ;
 
         private static readonly SolidColorBrush SoftLabelIdleBorderBrush = CreateFrozenBrush(Color.FromRgb(83, 88, 92));
         private static readonly SolidColorBrush SoftLabelActiveBorderBrush = CreateFrozenBrush(Color.FromRgb(45, 52, 60));
@@ -125,14 +167,30 @@ namespace CNCSS.UI.FanucPanel
         private int _progNcFocusLineIndex = -1;
         private int _progNcCaretColumn;
 
+        private enum PosSubPage
+        {
+            Abs,
+            Rel,
+            All
+        }
+
+        private PosSubPage _posSubPage = PosSubPage.Abs;
+        private bool _posOprtMenuActive;
+
+        private bool _progOprtMenuActive;
+        private int _progOprtMenuPageIndex;
+
         /// <summary>Кэш всех строк каталога (без шапки) для постраничного вывода.</summary>
         private List<(string a, string b, string c, string d)> _directoryDataCache = new();
         private int _directoryProgramListPageIndex;
         private const int DirectoryDataRowsPerPage = 12;
 
+        public NcProgramCatalogService ProgramCatalogService { get; set; } = new();
+
         public FanucPanelControl()
         {
             InitializeComponent();
+            Loaded += (_, _) => Dispatcher.BeginInvoke(() => Keyboard.Focus(this), DispatcherPriority.Input);
 
             _progMdiSoftKeyPages = BuildProgMdiEditSoftKeyPages();
             _messageSoftKeyPages = BuildMessageSoftKeyPages();
@@ -140,6 +198,358 @@ namespace CNCSS.UI.FanucPanel
             UpdatePageVisibility();
             ValidateOffsetEditorInputs();
             UpdateMdiEditModeButtons();
+            EnsureOffsetToolCellCache();
+            SnapOffsetToolPageToSelection();
+            RefreshOffsetToolPage();
+            ApplyOffsetToolSelectionVisual();
+            RefreshOffsetInputLine();
+        }
+
+        private void EnsureOffsetToolCellCache()
+        {
+            if (_offsetToolCellBorders != null)
+            {
+                return;
+            }
+
+            // [row 1..8, col 1..4] → Border in XAML.
+            _offsetToolCellBorders = new Border[9, 5];
+            _offsetToolCellTexts = new TextBlock[9, 5];
+            _offsetToolRowLabels = new TextBlock[9];
+            for (int r = 1; r <= 8; r++)
+            {
+                if (FindName($"OffsetToolRowLabel_{r}") is TextBlock lbl)
+                {
+                    _offsetToolRowLabels[r] = lbl;
+                }
+
+                for (int c = 1; c <= 4; c++)
+                {
+                    if (FindName($"OffsetToolCell_{r}_{c}") is Border b)
+                    {
+                        _offsetToolCellBorders[r, c] = b;
+                    }
+
+                    if (FindName($"OffsetToolCellText_{r}_{c}") is TextBlock t)
+                    {
+                        _offsetToolCellTexts[r, c] = t;
+                    }
+                }
+            }
+        }
+
+        private void RefreshOffsetToolPage()
+        {
+            EnsureOffsetToolCellCache();
+            if (_offsetToolRowLabels == null)
+            {
+                return;
+            }
+
+            for (int visibleRow = 1; visibleRow <= OffsetToolRowsPerPage; visibleRow++)
+            {
+                int absoluteRow = _offsetToolPageStartRow + (visibleRow - 1);
+                bool exists = absoluteRow <= OffsetToolTotalRows;
+                TextBlock label = _offsetToolRowLabels[visibleRow];
+                if (label != null)
+                {
+                    label.Text = exists ? absoluteRow.ToString("000", CultureInfo.InvariantCulture) : string.Empty;
+                    label.Visibility = exists ? Visibility.Visible : Visibility.Collapsed;
+                }
+
+                if (_offsetToolCellTexts != null)
+                {
+                    for (int c = 1; c <= 4; c++)
+                    {
+                        TextBlock t = _offsetToolCellTexts[visibleRow, c];
+                        if (t != null)
+                        {
+                            t.Text = exists
+                                ? _offsetToolValues[absoluteRow, c].ToString("0.000", CultureInfo.InvariantCulture)
+                                : string.Empty;
+                        }
+                    }
+                }
+
+                if (_offsetToolCellBorders == null)
+                {
+                    continue;
+                }
+
+                for (int c = 1; c <= 4; c++)
+                {
+                    Border b = _offsetToolCellBorders[visibleRow, c];
+                    if (b != null)
+                    {
+                        b.Visibility = exists ? Visibility.Visible : Visibility.Collapsed;
+                    }
+                }
+            }
+        }
+
+        private void ApplyOffsetToolSelectionVisual()
+        {
+            EnsureOffsetToolCellCache();
+            if (_offsetToolCellBorders == null)
+            {
+                return;
+            }
+
+            for (int visibleRow = 1; visibleRow <= OffsetToolRowsPerPage; visibleRow++)
+            {
+                for (int c = 1; c <= 4; c++)
+                {
+                    Border b = _offsetToolCellBorders[visibleRow, c];
+                    if (b == null)
+                    {
+                        continue;
+                    }
+
+                    int absoluteRow = _offsetToolPageStartRow + (visibleRow - 1);
+                    b.Background = (absoluteRow == _offsetToolSelectedRow && c == _offsetToolSelectedCol)
+                        ? new SolidColorBrush(Color.FromRgb(0xE8, 0xD4, 0x00))
+                        : Brushes.Transparent;
+                }
+            }
+        }
+
+        private void SnapOffsetToolPageToSelection()
+        {
+            int clamped = Math.Max(1, Math.Min(OffsetToolTotalRows, _offsetToolSelectedRow));
+            _offsetToolSelectedRow = clamped;
+            _offsetToolPageStartRow = ((_offsetToolSelectedRow - 1) / OffsetToolRowsPerPage) * OffsetToolRowsPerPage + 1;
+        }
+
+        private void EnsureOffsetWorkCellCache()
+        {
+            if (_offsetWorkCells != null)
+            {
+                return;
+            }
+
+            // Index = system*3 + axis: system 0 EXT, 1 G54, 2 G55, 3 G56, 4 G57, 5 G58, 6 G59; axis 0 X,1 Y,2 Z.
+            _offsetWorkCells = new Border[21];
+            _offsetWorkCells[0] = FindName("OffsetWorkCell_EXT_X") as Border ?? new Border();
+            _offsetWorkCells[1] = FindName("OffsetWorkCell_EXT_Y") as Border ?? new Border();
+            _offsetWorkCells[2] = FindName("OffsetWorkCell_EXT_Z") as Border ?? new Border();
+            _offsetWorkCells[3] = FindName("OffsetWorkCell_G54_X") as Border ?? new Border();
+            _offsetWorkCells[4] = FindName("OffsetWorkCell_G54_Y") as Border ?? new Border();
+            _offsetWorkCells[5] = FindName("OffsetWorkCell_G54_Z") as Border ?? new Border();
+            _offsetWorkCells[6] = FindName("OffsetWorkCell_G55_X") as Border ?? new Border();
+            _offsetWorkCells[7] = FindName("OffsetWorkCell_G55_Y") as Border ?? new Border();
+            _offsetWorkCells[8] = FindName("OffsetWorkCell_G55_Z") as Border ?? new Border();
+            _offsetWorkCells[9] = FindName("OffsetWorkCell_G56_X") as Border ?? new Border();
+            _offsetWorkCells[10] = FindName("OffsetWorkCell_G56_Y") as Border ?? new Border();
+            _offsetWorkCells[11] = FindName("OffsetWorkCell_G56_Z") as Border ?? new Border();
+            _offsetWorkCells[12] = FindName("OffsetWorkCell_G57_X") as Border ?? new Border();
+            _offsetWorkCells[13] = FindName("OffsetWorkCell_G57_Y") as Border ?? new Border();
+            _offsetWorkCells[14] = FindName("OffsetWorkCell_G57_Z") as Border ?? new Border();
+            _offsetWorkCells[15] = FindName("OffsetWorkCell_G58_X") as Border ?? new Border();
+            _offsetWorkCells[16] = FindName("OffsetWorkCell_G58_Y") as Border ?? new Border();
+            _offsetWorkCells[17] = FindName("OffsetWorkCell_G58_Z") as Border ?? new Border();
+            _offsetWorkCells[18] = FindName("OffsetWorkCell_G59_X") as Border ?? new Border();
+            _offsetWorkCells[19] = FindName("OffsetWorkCell_G59_Y") as Border ?? new Border();
+            _offsetWorkCells[20] = FindName("OffsetWorkCell_G59_Z") as Border ?? new Border();
+        }
+
+        public void UpdateWorkOffsetsTable(IReadOnlyDictionary<int, (double X, double Y, double Z)> offsets)
+        {
+            string FormatOffset(double value) => value.ToString("0.000", CultureInfo.InvariantCulture);
+
+            void Apply(int systemNumber, TextBlock x, TextBlock y, TextBlock z)
+            {
+                if (!offsets.TryGetValue(systemNumber, out var v))
+                {
+                    v = (0, 0, 0);
+                }
+                x.Text = FormatOffset(v.X);
+                y.Text = FormatOffset(v.Y);
+                z.Text = FormatOffset(v.Z);
+            }
+
+            Apply(0, OffsetWorkExtXText, OffsetWorkExtYText, OffsetWorkExtZText);
+            Apply(54, OffsetWorkG54XText, OffsetWorkG54YText, OffsetWorkG54ZText);
+            Apply(55, OffsetWorkG55XText, OffsetWorkG55YText, OffsetWorkG55ZText);
+            Apply(56, OffsetWorkG56XText, OffsetWorkG56YText, OffsetWorkG56ZText);
+            Apply(57, OffsetWorkG57XText, OffsetWorkG57YText, OffsetWorkG57ZText);
+            Apply(58, OffsetWorkG58XText, OffsetWorkG58YText, OffsetWorkG58ZText);
+            Apply(59, OffsetWorkG59XText, OffsetWorkG59YText, OffsetWorkG59ZText);
+        }
+
+        private void ApplyOffsetWorkSelectionVisual()
+        {
+            EnsureOffsetWorkCellCache();
+            if (_offsetWorkCells == null)
+            {
+                return;
+            }
+
+            int selected = (_offsetWorkSelectedSystem * 3) + _offsetWorkSelectedAxis;
+            for (int i = 0; i < _offsetWorkCells.Length; i++)
+            {
+                Border? b = _offsetWorkCells[i];
+                if (b == null)
+                {
+                    continue;
+                }
+
+                b.Background = i == selected
+                    ? new SolidColorBrush(Color.FromRgb(0xE8, 0xD4, 0x00))
+                    : new SolidColorBrush(Color.FromRgb(0xB8, 0xBE, 0xC6));
+            }
+        }
+
+        private void RefreshOffsetInputLine()
+        {
+            if (OffsetInputTextBox == null)
+            {
+                return;
+            }
+
+            OffsetInputTextBox.Text = string.IsNullOrEmpty(_offsetInputBuffer) ? "_" : _offsetInputBuffer;
+        }
+
+        private static char? TryMapOffsetInputChar(Key key)
+        {
+            if (key >= Key.A && key <= Key.Z)
+            {
+                return (char)('A' + (key - Key.A));
+            }
+
+            if (key >= Key.D0 && key <= Key.D9)
+            {
+                return (char)('0' + (key - Key.D0));
+            }
+
+            if (key >= Key.NumPad0 && key <= Key.NumPad9)
+            {
+                return (char)('0' + (key - Key.NumPad0));
+            }
+
+            return key switch
+            {
+                Key.OemMinus => '-',
+                Key.Subtract => '-',
+                Key.OemPlus => '+',
+                Key.Add => '+',
+                Key.OemPeriod => '.',
+                Key.Decimal => '.',
+                Key.Space => ' ',
+                _ => null
+            };
+        }
+
+        private void FanucPanelControl_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+            if (_currentPage != FanucPage.Offset)
+            {
+                return;
+            }
+
+            if (_offsetSubPage == OffsetSubPage.Work)
+            {
+                switch (key)
+                {
+                    case Key.Left:
+                        _offsetWorkSelectedSystem = (_offsetWorkSelectedSystem <= 1) ? _offsetWorkSelectedSystem : _offsetWorkSelectedSystem - 2;
+                        ApplyOffsetWorkSelectionVisual();
+                        e.Handled = true;
+                        return;
+                    case Key.Right:
+                        _offsetWorkSelectedSystem = (_offsetWorkSelectedSystem >= 2) ? _offsetWorkSelectedSystem : _offsetWorkSelectedSystem + 2;
+                        ApplyOffsetWorkSelectionVisual();
+                        e.Handled = true;
+                        return;
+                    case Key.Up:
+                        if (_offsetWorkSelectedAxis > 0)
+                        {
+                            _offsetWorkSelectedAxis--;
+                        }
+                        else
+                        {
+                            if (_offsetWorkSelectedSystem == 1) _offsetWorkSelectedSystem = 0;
+                            else if (_offsetWorkSelectedSystem == 3) _offsetWorkSelectedSystem = 2;
+                        }
+                        ApplyOffsetWorkSelectionVisual();
+                        e.Handled = true;
+                        return;
+                    case Key.Down:
+                        if (_offsetWorkSelectedAxis < 2)
+                        {
+                            _offsetWorkSelectedAxis++;
+                        }
+                        else
+                        {
+                            if (_offsetWorkSelectedSystem == 0) _offsetWorkSelectedSystem = 1;
+                            else if (_offsetWorkSelectedSystem == 2) _offsetWorkSelectedSystem = 3;
+                        }
+                        ApplyOffsetWorkSelectionVisual();
+                        e.Handled = true;
+                        return;
+                }
+            }
+
+            if (_offsetSubPage == OffsetSubPage.ToolOffset)
+            {
+                switch (key)
+                {
+                    case Key.Left:
+                        _offsetToolSelectedCol = Math.Max(1, _offsetToolSelectedCol - 1);
+                        ApplyOffsetToolSelectionVisual();
+                        e.Handled = true;
+                        return;
+                    case Key.Right:
+                        _offsetToolSelectedCol = Math.Min(4, _offsetToolSelectedCol + 1);
+                        ApplyOffsetToolSelectionVisual();
+                        e.Handled = true;
+                        return;
+                    case Key.Up:
+                        _offsetToolSelectedRow = Math.Max(1, _offsetToolSelectedRow - 1);
+                        SnapOffsetToolPageToSelection();
+                        RefreshOffsetToolPage();
+                        ApplyOffsetToolSelectionVisual();
+                        e.Handled = true;
+                        return;
+                    case Key.Down:
+                        _offsetToolSelectedRow = Math.Min(OffsetToolTotalRows, _offsetToolSelectedRow + 1);
+                        SnapOffsetToolPageToSelection();
+                        RefreshOffsetToolPage();
+                        ApplyOffsetToolSelectionVisual();
+                        e.Handled = true;
+                        return;
+                }
+            }
+
+            if (key == Key.Escape)
+            {
+                _offsetInputBuffer = string.Empty;
+                RefreshOffsetInputLine();
+                e.Handled = true;
+                return;
+            }
+
+            if (key == Key.Back)
+            {
+                if (!string.IsNullOrEmpty(_offsetInputBuffer))
+                {
+                    _offsetInputBuffer = _offsetInputBuffer.Length == 1 ? string.Empty : _offsetInputBuffer[..^1];
+                    RefreshOffsetInputLine();
+                }
+                e.Handled = true;
+                return;
+            }
+
+            char? ch = TryMapOffsetInputChar(key);
+            if (ch.HasValue)
+            {
+                if (_offsetInputBuffer.Length < 22)
+                {
+                    _offsetInputBuffer += ch.Value;
+                }
+                RefreshOffsetInputLine();
+                e.Handled = true;
+            }
         }
 
         private static SolidColorBrush CreateFrozenBrush(Color c)
@@ -163,6 +573,31 @@ namespace CNCSS.UI.FanucPanel
                 b.BorderBrush = SoftLabelIdleBorderBrush;
             }
 
+            if (_currentPage == FanucPage.Pos)
+            {
+                // Per reference: highlight ABS/REL/ALL selection; in OPRT submenu don't highlight.
+                if (_posOprtMenuActive)
+                {
+                    return;
+                }
+
+                Border? active = _posSubPage switch
+                {
+                    PosSubPage.Abs => SoftLblBorderSlot1,
+                    PosSubPage.Rel => SoftLblBorderSlot2,
+                    PosSubPage.All => SoftLblBorderSlot3,
+                    _ => null
+                };
+
+                if (active != null)
+                {
+                    active.BorderThickness = new Thickness(2);
+                    active.BorderBrush = SoftLabelActiveBorderBrush;
+                }
+
+                return;
+            }
+
             if (_currentPage == FanucPage.Alarm)
             {
                 ApplySoftMenuLabelHighlightMessageActive();
@@ -174,13 +609,67 @@ namespace CNCSS.UI.FanucPanel
                 return;
             }
 
-            if (_currentPage != FanucPage.Prog || _currentProgSubPage != ProgSubPage.ProgramMain)
+            if (_currentPage == FanucPage.Offset)
+            {
+                ApplySoftMenuLabelHighlightOffsetActive();
+                return;
+            }
+
+            if (_currentPage == FanucPage.System)
+            {
+                // Only PARA exists; keep highlighted.
+                SoftLblBorderSlot1.BorderThickness = new Thickness(2);
+                SoftLblBorderSlot1.BorderBrush = SoftLabelActiveBorderBrush;
+                return;
+            }
+
+            if (_currentPage == FanucPage.CustomGrph)
+            {
+                // Only PARAM exists; keep highlighted.
+                SoftLblBorderSlot1.BorderThickness = new Thickness(2);
+                SoftLblBorderSlot1.BorderBrush = SoftLabelActiveBorderBrush;
+                return;
+            }
+
+            if (_currentPage != FanucPage.Prog)
             {
                 return;
             }
 
-            SoftLblBorderSlot2.BorderThickness = new Thickness(2);
-            SoftLblBorderSlot2.BorderBrush = SoftLabelActiveBorderBrush;
+            if (_currentProgSubPage == ProgSubPage.ProgramDirectory)
+            {
+                SoftLblBorderSlot3.BorderThickness = new Thickness(2);
+                SoftLblBorderSlot3.BorderBrush = SoftLabelActiveBorderBrush;
+            }
+            else
+            {
+                SoftLblBorderSlot2.BorderThickness = new Thickness(2);
+                SoftLblBorderSlot2.BorderBrush = SoftLabelActiveBorderBrush;
+            }
+        }
+
+        private void ApplySoftMenuLabelHighlightOffsetActive()
+        {
+            // Для OFFSET меню ввода/(OPRT) не подсвечиваем ни одну софт-клавишу:
+            // возврат выполняется софт-клавишей "<" внутри OPRT.
+            if (_offsetOprtMenuActive)
+            {
+                return;
+            }
+
+            Border? active = _offsetSubPage switch
+            {
+                OffsetSubPage.ToolOffset => SoftLblBorderSlot1,
+                OffsetSubPage.Setting => SoftLblBorderSlot2,
+                OffsetSubPage.Work => SoftLblBorderSlot3,
+                _ => null
+            };
+
+            if (active != null)
+            {
+                active.BorderThickness = new Thickness(2);
+                active.BorderBrush = SoftLabelActiveBorderBrush;
+            }
         }
 
         private void InitializeSoftKeys()
@@ -188,10 +677,37 @@ namespace CNCSS.UI.FanucPanel
             _softKeyByPage.Clear();
             _softKeyByPage[FanucPage.Pos] = new List<(string Label, Action Action)>
             {
-                ("ABS", () => SetAlarm("POS ABS", false)),
-                ("REL", () => SetAlarm("POS REL", false)),
-                ("ALL", () => SetAlarm("POS ALL", false)),
-                ("OPRT", () => SetAlarm("POS OPRT", false))
+                ("ABS", () =>
+                {
+                    _posOprtMenuActive = false;
+                    _posSubPage = PosSubPage.Abs;
+                    RefreshPosScreen();
+                    ApplyScreenHeaderForPage();
+                    UpdateSoftKeyBar();
+                }),
+                ("REL", () =>
+                {
+                    _posOprtMenuActive = false;
+                    _posSubPage = PosSubPage.Rel;
+                    RefreshPosScreen();
+                    ApplyScreenHeaderForPage();
+                    UpdateSoftKeyBar();
+                }),
+                ("ALL", () =>
+                {
+                    _posOprtMenuActive = false;
+                    _posSubPage = PosSubPage.All;
+                    RefreshPosScreen();
+                    ApplyScreenHeaderForPage();
+                    UpdateSoftKeyBar();
+                }),
+                ("", () => { }),
+                ("OPRT", () =>
+                {
+                    _posOprtMenuActive = true;
+                    UpdateSoftKeyBar();
+                }),
+                ("", () => { })
             };
 
             _softKeyByPage[FanucPage.Prog] = new List<(string Label, Action Action)>
@@ -211,51 +727,33 @@ namespace CNCSS.UI.FanucPanel
                 }),
                 ("", () => { }),
                 ("", () => { }),
-                ("(OPRT)", () => SetAlarm("PROG OPTIONS", false))
-            };
-
-            _softKeyByPage[FanucPage.Offset] = new List<(string Label, Action Action)>
-            {
-                ("G54..59", () => SetAlarm("OFFSET G54-G59", false)),
-                ("TOOL LEN", () => SetAlarm("OFFSET TOOL LENGTH", false)),
-                ("TOOL RAD", () => SetAlarm("OFFSET TOOL RADIUS", false)),
-                ("READ ACT", () => OffsetReadActiveToEditorRequested?.Invoke()),
-                ("APPLY", () => OffsetApply_Click(this, new RoutedEventArgs())),
-                ("SETTING", () => SetPage(FanucPage.Setting)),
-                ("SYSTEM", () => SetPage(FanucPage.System))
+                ("(OPRT)", () =>
+                {
+                    _progOprtMenuActive = true;
+                    _progOprtMenuPageIndex = 0;
+                    LogUserAction("PROG → (OPRT)");
+                    UpdateSoftKeyBar();
+                })
             };
 
             _softKeyByPage[FanucPage.System] = new List<(string Label, Action Action)>
             {
-                ("PARAM", () => SetAlarm("SYSTEM PARAM", false)),
-                ("DIAG", () => SetPage(FanucPage.Diagn)),
-                ("PMC", () => SetAlarm("SYSTEM PMC", false)),
-                ("SERVO", () => SetAlarm("SYSTEM SERVO", false)),
-                ("I/O", () => SetAlarm("SYSTEM I/O", false)),
-                ("ALARM", () => SetPage(FanucPage.Alarm)),
-                ("POS", () => SetPage(FanucPage.Pos))
+                ("PARA", () => SetAlarm("SYSTEM PARA", false)),
+                ("", () => { }),
+                ("", () => { }),
+                ("", () => { }),
+                ("", () => { }),
+                ("", () => { })
             };
 
-            _softKeyByPage[FanucPage.Diagn] = new List<(string Label, Action Action)>
+            _softKeyByPage[FanucPage.CustomGrph] = new List<(string Label, Action Action)>
             {
-                ("INTERLOCK", () => SetAlarm("DIAGN INTERLOCK", false)),
-                ("LIMITS", () => SetAlarm("DIAGN LIMITS", false)),
-                ("MDI", () => SetAlarm("DIAGN MDI", false)),
-                ("SBLOCK", () => SetAlarm("DIAGN SINGLE BLOCK", false)),
-                ("OPTSTOP", () => SetAlarm("DIAGN OPTIONAL STOP", false)),
-                ("DRYRUN", () => SetAlarm("DIAGN DRY RUN", false)),
-                ("SYSTEM", () => SetPage(FanucPage.System))
-            };
-
-            _softKeyByPage[FanucPage.Setting] = new List<(string Label, Action Action)>
-            {
-                ("FEED OV", () => SetAlarm("SETTING FEED OVERRIDE", false)),
-                ("RAPID OV", () => SetAlarm("SETTING RAPID OVERRIDE", false)),
-                ("S-BLOCK", () => SingleBlockChangedRequested?.Invoke(!SingleBlockCheckBox.IsChecked.GetValueOrDefault())),
-                ("OPT.STOP", () => OptionalStopChangedRequested?.Invoke(!OptionalStopCheckBox.IsChecked.GetValueOrDefault())),
-                ("DRY RUN", () => DryRunChangedRequested?.Invoke(!DryRunCheckBox.IsChecked.GetValueOrDefault())),
-                ("OFFSET", () => SetPage(FanucPage.Offset)),
-                ("POS", () => SetPage(FanucPage.Pos))
+                ("PARAM", () => SetAlarm("CUSTOM GRPH PARAM", false)),
+                ("", () => { }),
+                ("", () => { }),
+                ("", () => { }),
+                ("", () => { }),
+                ("", () => { })
             };
             _softKeyStartIndex = 0;
             UpdateSoftKeyBar();
@@ -405,9 +903,7 @@ namespace CNCSS.UI.FanucPanel
         }
 
         private bool IsProgMdiProgramEditSoftkeysActive() =>
-            _currentPage == FanucPage.Prog
-            && (IsMdiLineKeyboardFocused()
-                || !string.IsNullOrWhiteSpace(MdiInputTextBox.Text));
+            false;
 
         /// <summary>Обновляет набор нижних софт-клавиш после ввод/фокуса MDI или смены экрана.</summary>
         private void RefreshProgMdiTypingSoftkeys()
@@ -456,25 +952,37 @@ namespace CNCSS.UI.FanucPanel
         {
             var pageA = new List<(string Label, Action Action)>
             {
-                ("", () => { }),
                 ("MSG", () => SwitchMessageSubPage(MessageSubPage.CurrentMessage)),
                 ("HISTRY", () => SwitchMessageSubPage(MessageSubPage.UserActionHistory)),
                 ("", () => { }),
-                ("(OPRT)", () => SetAlarm("MESSAGE OPRT", false)),
-                ("", () => { })
+                ("", () => { }),
+                ("", () => { }),
+                ("→", () => SwitchMessageSoftKeyPage(1))
             };
 
             var pageB = new List<(string Label, Action Action)>
             {
-                ("", () => { }),
                 ("MSGHIS", () => SwitchMessageSubPage(MessageSubPage.SessionAlarmHistory)),
                 ("", () => { }),
                 ("", () => { }),
-                ("(OPRT)", () => SetAlarm("MESSAGE OPRT", false)),
-                ("", () => { })
+                ("", () => { }),
+                ("", () => { }),
+                ("→", () => SwitchMessageSoftKeyPage(0))
             };
 
             return [pageA, pageB];
+        }
+
+        private void SwitchMessageSoftKeyPage(int pageIndex)
+        {
+            if (_messageSoftKeyPages.Length == 0)
+            {
+                return;
+            }
+
+            _messageSoftKeyCarouselIndex = Math.Clamp(pageIndex, 0, _messageSoftKeyPages.Length - 1);
+            _softKeyStartIndex = 0;
+            UpdateSoftKeyBar();
         }
 
         private void SwitchMessageSubPage(MessageSubPage subPage)
@@ -506,6 +1014,13 @@ namespace CNCSS.UI.FanucPanel
             {
                 MessageSubPage.CurrentMessage => "ALARM MESSAGE",
                 MessageSubPage.UserActionHistory => "MESSAGE",
+                MessageSubPage.SessionAlarmHistory => "MESSAGE HISTORY",
+                _ => "MESSAGE"
+            };
+            MessagePanelTitleText.Text = _messageSubPage switch
+            {
+                MessageSubPage.CurrentMessage => "MESSAGE",
+                MessageSubPage.UserActionHistory => "HISTORY",
                 MessageSubPage.SessionAlarmHistory => "MESSAGE HISTORY",
                 _ => "MESSAGE"
             };
@@ -562,19 +1077,19 @@ namespace CNCSS.UI.FanucPanel
             {
                 if (_messageSubPage == MessageSubPage.CurrentMessage)
                 {
-                    SoftLblBorderSlot2.BorderThickness = new Thickness(2);
-                    SoftLblBorderSlot2.BorderBrush = SoftLabelActiveBorderBrush;
+                    SoftLblBorderSlot1.BorderThickness = new Thickness(2);
+                    SoftLblBorderSlot1.BorderBrush = SoftLabelActiveBorderBrush;
                 }
                 else if (_messageSubPage == MessageSubPage.UserActionHistory)
                 {
-                    SoftLblBorderSlot3.BorderThickness = new Thickness(2);
-                    SoftLblBorderSlot3.BorderBrush = SoftLabelActiveBorderBrush;
+                    SoftLblBorderSlot2.BorderThickness = new Thickness(2);
+                    SoftLblBorderSlot2.BorderBrush = SoftLabelActiveBorderBrush;
                 }
             }
             else if (_messageSoftKeyCarouselIndex == 1 && _messageSubPage == MessageSubPage.SessionAlarmHistory)
             {
-                SoftLblBorderSlot2.BorderThickness = new Thickness(2);
-                SoftLblBorderSlot2.BorderBrush = SoftLabelActiveBorderBrush;
+                SoftLblBorderSlot1.BorderThickness = new Thickness(2);
+                SoftLblBorderSlot1.BorderBrush = SoftLabelActiveBorderBrush;
             }
         }
 
@@ -630,12 +1145,74 @@ namespace CNCSS.UI.FanucPanel
             ApplySoftMenuLabelHighlight();
         }
 
-        public void UpdateMachinePosition(double x, double y, double z)
+        public void UpdateMachinePosition(
+            double physicalX,
+            double physicalY,
+            double physicalZ,
+            double machineZeroOffsetX,
+            double machineZeroOffsetY,
+            double machineZeroOffsetZ,
+            double workOffsetX,
+            double workOffsetY,
+            double workOffsetZ)
         {
-            ScreenPositionText.Text =
-                $"X      {x:+0.000;-0.000;+0.000}\n" +
-                $"Y      {y:+0.000;-0.000;+0.000}\n" +
-                $"Z      {z:+0.000;-0.000;+0.000}";
+            _lastPhysicalX = physicalX;
+            _lastPhysicalY = physicalY;
+            _lastPhysicalZ = physicalZ;
+            _machineZeroOffsetX = machineZeroOffsetX;
+            _machineZeroOffsetY = machineZeroOffsetY;
+            _machineZeroOffsetZ = machineZeroOffsetZ;
+            _activeWorkOffsetX = workOffsetX;
+            _activeWorkOffsetY = workOffsetY;
+            _activeWorkOffsetZ = workOffsetZ;
+            RefreshPosScreen();
+
+            var (_, _, _, absX, absY, absZ) = ToDisplayCoordinates();
+            OffsetActualPositionLineText.Text =
+                $"X        {absX:+0.000;-0.000;+0.000}  Y        {absY:+0.000;-0.000;+0.000}  Z        {absZ:+0.000;-0.000;+0.000}";
+        }
+
+        private (double mcsX, double mcsY, double mcsZ, double absX, double absY, double absZ) ToDisplayCoordinates()
+        {
+            double mcsX = _lastPhysicalX - _machineZeroOffsetX;
+            double mcsY = _lastPhysicalY - _machineZeroOffsetY;
+            double mcsZ = _lastPhysicalZ - _machineZeroOffsetZ;
+            double absX = mcsX - _activeWorkOffsetX;
+            double absY = mcsY - _activeWorkOffsetY;
+            double absZ = mcsZ - _activeWorkOffsetZ;
+            return (mcsX, mcsY, mcsZ, absX, absY, absZ);
+        }
+
+        private void RefreshPosScreen()
+        {
+            string Format(double value) => value.ToString("+0.000;-0.000;+0.000", CultureInfo.InvariantCulture);
+            var (mcsX, mcsY, mcsZ, absX, absY, absZ) = ToDisplayCoordinates();
+
+            if (_posSubPage == PosSubPage.All)
+            {
+                PosSingleGrid.Visibility = Visibility.Collapsed;
+                PosAllGrid.Visibility = Visibility.Visible;
+
+                PosAllAbsXText.Text = Format(absX);
+                PosAllAbsYText.Text = Format(absY);
+                PosAllAbsZText.Text = Format(absZ);
+                PosAllRelXText.Text = Format(absX);
+                PosAllRelYText.Text = Format(absY);
+                PosAllRelZText.Text = Format(absZ);
+                PosAllMachXText.Text = Format(mcsX);
+                PosAllMachYText.Text = Format(mcsY);
+                PosAllMachZText.Text = Format(mcsZ);
+                PosAllDistXText.Text = "0.000";
+                PosAllDistYText.Text = "0.000";
+                PosAllDistZText.Text = "0.000";
+                return;
+            }
+
+            PosSingleGrid.Visibility = Visibility.Visible;
+            PosAllGrid.Visibility = Visibility.Collapsed;
+            PosSingleXValueText.Text = Format(absX);
+            PosSingleYValueText.Text = Format(absY);
+            PosSingleZValueText.Text = Format(absZ);
         }
 
         public void UpdateProgramLine(int? lineNumber)
@@ -684,7 +1261,9 @@ namespace CNCSS.UI.FanucPanel
 
         public void UpdateStatusClock(DateTime localTime)
         {
-            ScreenStatusClockText.Text = localTime.ToString("HH:mm:ss");
+            string clock = localTime.ToString("HH:mm:ss");
+            ScreenStatusClockText.Text = clock;
+            OffsetStatusClockText.Text = clock;
         }
 
         public void UpdateDiagnostics(
@@ -700,25 +1279,33 @@ namespace CNCSS.UI.FanucPanel
             bool isOptionalStopEnabled,
             bool isDryRunEnabled)
         {
-            ScreenDiagnModeText.Text = $"MODE: {mode}";
-            ScreenDiagnMdiModeText.Text = $"MDI: {mdiMode}";
-            ScreenDiagnCycleText.Text = isCycleRunning ? "CYCLE: RUNNING" : "CYCLE: FEED HOLD";
-            ScreenDiagnLastMdiText.Text = $"LAST MDI: {lastMdiCommand}";
-            ScreenDiagnMdiStatusText.Text = $"MDI STATUS: {mdiStatus}";
-            ScreenDiagnInterlockCodeText.Text = $"INTERLOCK CODE: {interlockCode}";
-            ScreenDiagnInterlockDetailText.Text = $"INTERLOCK DETAIL: {interlockDetail}";
-            ScreenDiagnSingleBlockText.Text = $"SINGLE BLOCK: {(isSingleBlockEnabled ? "ON" : "OFF")}";
-            ScreenDiagnOptionalStopText.Text = $"OPTIONAL STOP: {(isOptionalStopEnabled ? "ON" : "OFF")}";
-            ScreenDiagnDryRunText.Text = $"DRY RUN: {(isDryRunEnabled ? "ON" : "OFF")}";
+            ScreenDiagnModeText.Text = "DRAW MODE";
+            ScreenDiagnMdiModeText.Text = string.Equals(mode, "MEM", StringComparison.OrdinalIgnoreCase) ? "PATH" : "CHECK";
+            ScreenDiagnCycleText.Text = "SCALE";
+            ScreenDiagnLastMdiText.Text = isCycleRunning ? "AUTO" : "MANUAL";
+            ScreenDiagnMdiStatusText.Text = "PLANE";
+            ScreenDiagnInterlockCodeText.Text = "XY";
+            ScreenDiagnInterlockDetailText.Text = "TRACE";
+            ScreenDiagnSingleBlockText.Text = string.Equals(interlockCode, "OK", StringComparison.OrdinalIgnoreCase) ? "ON" : "OFF";
+            ScreenDiagnOptionalStopText.Text = "DRY RUN";
+            ScreenDiagnDryRunText.Text = isDryRunEnabled ? "ON" : "OFF";
             ScreenDiagnLimitsText.Text = limitsText;
         }
 
         public void UpdateOffsets(string coordinateSystem, double offsetX, double offsetY, double offsetZ)
         {
-            ScreenOffsetCoordText.Text = $"COORD: {coordinateSystem}";
-            ScreenOffsetXText.Text = $"{coordinateSystem} X: {offsetX:+0.000;-0.000;+0.000}";
-            ScreenOffsetYText.Text = $"{coordinateSystem} Y: {offsetY:+0.000;-0.000;+0.000}";
-            ScreenOffsetZText.Text = $"{coordinateSystem} Z: {offsetZ:+0.000;-0.000;+0.000}";
+            string wcs = string.IsNullOrWhiteSpace(coordinateSystem) ? "G54" : coordinateSystem.Trim();
+            if (!wcs.StartsWith('('))
+            {
+                wcs = $"({wcs})";
+            }
+
+            OffsetWorkActiveSystemText.Text = wcs;
+
+            string FormatOffset(double value) => value.ToString("0.000", CultureInfo.InvariantCulture);
+            OffsetWorkG54XText.Text = FormatOffset(offsetX);
+            OffsetWorkG54YText.Text = FormatOffset(offsetY);
+            OffsetWorkG54ZText.Text = FormatOffset(offsetZ);
         }
 
         public void UpdateOffsetEditor(string coordinateSystem, double offsetX, double offsetY, double offsetZ)
@@ -753,11 +1340,6 @@ namespace CNCSS.UI.FanucPanel
         public void UpdateSettings(double workOverridePercent, double rapidOverridePercent, bool singleBlock, bool optionalStop, bool dryRun)
         {
             _feedOverridePercent = workOverridePercent;
-            ScreenSettingWorkOverrideText.Text = $"WORK OVERRIDE: {workOverridePercent:F0}%";
-            ScreenSettingRapidOverrideText.Text = $"RAPID OVERRIDE: {rapidOverridePercent:F0}%";
-            ScreenSettingSingleBlockText.Text = $"SINGLE BLOCK: {(singleBlock ? "ON" : "OFF")}";
-            ScreenSettingOptionalStopText.Text = $"OPTIONAL STOP: {(optionalStop ? "ON" : "OFF")}";
-            ScreenSettingDryRunText.Text = $"DRY RUN: {(dryRun ? "ON" : "OFF")}";
             RefreshProgSpindleMetricLine();
         }
 
@@ -802,12 +1384,18 @@ namespace CNCSS.UI.FanucPanel
 
         public void UpdateSystemPage(string units, string coordinateMode, string plane, string motion, string activeWcs, string compensation)
         {
-            ScreenSystemUnitsText.Text = $"UNITS: {units}";
-            ScreenSystemCoordModeText.Text = $"COORD MODE: {coordinateMode}";
-            ScreenSystemPlaneText.Text = $"PLANE: {plane}";
-            ScreenSystemMotionText.Text = $"MOTION: {motion}";
-            ScreenSystemWcsText.Text = $"ACTIVE WCS: {activeWcs}";
-            ScreenSystemCompText.Text = $"COMP: {compensation}";
+            ScreenSystemUnitsText.Text = "UNITS";
+            ScreenSystemUnitsDataText.Text = units;
+            ScreenSystemCoordModeText.Text = "COORD MODE";
+            ScreenSystemCoordModeDataText.Text = coordinateMode;
+            ScreenSystemPlaneText.Text = "PLANE";
+            ScreenSystemPlaneDataText.Text = plane;
+            ScreenSystemMotionText.Text = "MOTION";
+            ScreenSystemMotionDataText.Text = motion;
+            ScreenSystemWcsText.Text = "ACTIVE WCS";
+            ScreenSystemWcsDataText.Text = activeWcs;
+            ScreenSystemCompText.Text = "COMPENSATION";
+            ScreenSystemCompDataText.Text = compensation;
         }
 
         public void UpdateMode(string mode)
@@ -815,6 +1403,7 @@ namespace CNCSS.UI.FanucPanel
             SetModeSelection(mode);
             _modeStatusAbbrev = AbbreviateControllerMode(mode);
             ScreenEditStatusText.Text = $"{_modeStatusAbbrev}**** *** ***";
+            RefreshOffsetStatusFooter();
             ApplyScreenHeaderForPage();
         }
 
@@ -924,17 +1513,143 @@ namespace CNCSS.UI.FanucPanel
 
         private void DiagnPage_Click(object sender, RoutedEventArgs e)
         {
-            SetPage(FanucPage.Diagn);
+            SetPage(FanucPage.CustomGrph);
         }
 
         private void OffsetPage_Click(object sender, RoutedEventArgs e)
         {
+            _offsetSubPage = OffsetSubPage.ToolOffset;
+            _offsetOprtMenuActive = false;
             SetPage(FanucPage.Offset);
         }
 
-        private void SettingPage_Click(object sender, RoutedEventArgs e)
+        private void SetOffsetSubPage(OffsetSubPage subPage)
         {
-            SetPage(FanucPage.Setting);
+            _offsetOprtMenuActive = false;
+            _offsetSubPage = subPage;
+            _offsetInputBuffer = string.Empty;
+            RefreshOffsetInputLine();
+            LogUserAction(subPage switch
+            {
+                OffsetSubPage.ToolOffset => "OFFSET → OFFSET",
+                OffsetSubPage.Setting => "OFFSET → SETTING",
+                OffsetSubPage.Work => "OFFSET → WORK",
+                _ => "OFFSET"
+            });
+            UpdateOffsetScreen();
+            UpdateSoftKeyBar();
+        }
+
+        private void EnterOffsetOprtMenu()
+        {
+            _offsetOprtMenuActive = true;
+            LogUserAction("OFFSET → (OPRT)");
+            UpdateSoftKeyBar();
+        }
+
+        private void ExitOffsetOprtMenu()
+        {
+            _offsetOprtMenuActive = false;
+            LogUserAction("OFFSET ← (OPRT)");
+            UpdateSoftKeyBar();
+        }
+
+        private void OffsetToolApplyInputToSelectedCell(bool add)
+        {
+            if (_offsetSubPage != OffsetSubPage.ToolOffset)
+            {
+                return;
+            }
+
+            string s = (_offsetInputBuffer ?? string.Empty).Trim();
+            if (string.IsNullOrEmpty(s))
+            {
+                return;
+            }
+
+            if (!double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
+            {
+                SetAlarm("OFFSET VALUE ERROR", true);
+                return;
+            }
+
+            int row = _offsetToolSelectedRow;
+            int col = _offsetToolSelectedCol;
+            if (row < 1 || row > OffsetToolTotalRows || col < 1 || col > 4)
+            {
+                return;
+            }
+
+            double next = add ? _offsetToolValues[row, col] + value : value;
+            _offsetToolValues[row, col] = next;
+            RefreshOffsetToolPage();
+            ApplyOffsetToolSelectionVisual();
+
+            OffsetToolValueUpdateRequested?.Invoke(
+                row,
+                (OffsetToolColumn)col,
+                next,
+                add);
+        }
+
+        private List<(string Label, Action Action)> GetOffsetSoftKeyItems()
+        {
+            if (_offsetOprtMenuActive)
+            {
+                string measureLabel = _offsetSubPage == OffsetSubPage.Work ? "MEASURE" : "C.INPUT";
+
+                return
+                [
+                    ("<", ExitOffsetOprtMenu),
+                    ("No.SRH", () => LogUserAction("OFFSET OPRT No.SRH")),
+                    (measureLabel, () => LogUserAction($"OFFSET OPRT {measureLabel}")),
+                    ("+INPUT", () =>
+                    {
+                        LogUserAction("OFFSET OPRT +INPUT");
+                        OffsetToolApplyInputToSelectedCell(add: true);
+                        _offsetInputBuffer = string.Empty;
+                        RefreshOffsetInputLine();
+                    }),
+                    ("INPUT", () =>
+                    {
+                        LogUserAction("OFFSET OPRT INPUT");
+                        OffsetToolApplyInputToSelectedCell(add: false);
+                        _offsetInputBuffer = string.Empty;
+                        RefreshOffsetInputLine();
+                    }),
+                    ("", () => { })
+                ];
+            }
+
+            return
+            [
+                ("OFFSET", () => SetOffsetSubPage(OffsetSubPage.ToolOffset)),
+                ("SETTING", () => SetOffsetSubPage(OffsetSubPage.Setting)),
+                ("WORK", () => SetOffsetSubPage(OffsetSubPage.Work)),
+                ("", () => { }),
+                ("(OPRT)", EnterOffsetOprtMenu),
+                ("", () => { })
+            ];
+        }
+
+        private void UpdateOffsetScreen()
+        {
+            OffsetToolSubPanel.Visibility = _offsetSubPage == OffsetSubPage.ToolOffset
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            OffsetSettingSubPanel.Visibility = _offsetSubPage == OffsetSubPage.Setting
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            OffsetWorkSubPanel.Visibility = _offsetSubPage == OffsetSubPage.Work
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            SnapOffsetToolPageToSelection();
+            RefreshOffsetToolPage();
+            ApplyOffsetToolSelectionVisual();
+            ApplyOffsetWorkSelectionVisual();
+            RefreshOffsetInputLine();
+            ApplyScreenHeaderForPage();
+            Dispatcher.BeginInvoke(() => Keyboard.Focus(this), DispatcherPriority.Input);
         }
 
         private void SystemPage_Click(object sender, RoutedEventArgs e)
@@ -954,7 +1669,24 @@ namespace CNCSS.UI.FanucPanel
                 return;
             }
 
-            NavigateSoftkeyPrev();
+            // Per PDF: physical arrows only page softkey menus, never switch modes.
+            if (_currentPage == FanucPage.Prog && _progOprtMenuActive)
+            {
+                // Exit OPRT by physical ◀ as a convenience (soft "<" also exists).
+                _progOprtMenuActive = false;
+                _progOprtMenuPageIndex = 0;
+                UpdateSoftKeyBar();
+                return;
+            }
+
+            if (_currentPage == FanucPage.Pos && _posOprtMenuActive)
+            {
+                _posOprtMenuActive = false;
+                UpdateSoftKeyBar();
+                return;
+            }
+
+            // Otherwise no-op (no mode cycling).
         }
 
         private void SoftkeyNext_Click(object sender, RoutedEventArgs e)
@@ -966,6 +1698,13 @@ namespace CNCSS.UI.FanucPanel
 
             if (TryMessageSoftkeyCarousel(1))
             {
+                return;
+            }
+
+            if (_currentPage == FanucPage.Prog && _progOprtMenuActive)
+            {
+                _progOprtMenuPageIndex = (_progOprtMenuPageIndex + 1) % 3;
+                UpdateSoftKeyBar();
                 return;
             }
 
@@ -993,39 +1732,11 @@ namespace CNCSS.UI.FanucPanel
             UpdateSoftKeyBar();
         }
 
-        public void NavigateSoftkeyPrev()
-        {
-            if (TryProgMdiNavigateSoftkeyPage(-1))
-            {
-                return;
-            }
+        // NavigateSoftkeyPrev/Next were used to cycle pages in an earlier prototype.
+        // Per reference PDF we must not change modes from physical softkey arrows.
+        public void NavigateSoftkeyPrev() => SoftkeyPrev_Click(this, new RoutedEventArgs());
 
-            if (TryMessageSoftkeyCarousel(-1))
-            {
-                return;
-            }
-
-            int pageCount = Enum.GetValues(typeof(FanucPage)).Length;
-            int next = ((int)_currentPage - 1 + pageCount) % pageCount;
-            _currentPage = (FanucPage)next;
-            UpdatePageVisibility();
-            UpdateSoftKeyBar();
-        }
-
-        public void NavigateSoftkeyNext()
-        {
-            if (TryProgMdiNavigateSoftkeyPage(1))
-            {
-                return;
-            }
-
-            if (TryMessageSoftkeyCarousel(1))
-            {
-                return;
-            }
-
-            SoftkeyNextAdvanceSlideWindowOnly();
-        }
+        public void NavigateSoftkeyNext() => SoftkeyNext_Click(this, new RoutedEventArgs());
 
         private void SoftKeyDynamic_Click(object sender, RoutedEventArgs e)
         {
@@ -1045,16 +1756,95 @@ namespace CNCSS.UI.FanucPanel
 
         private List<(string Label, Action Action)> GetSoftKeyItemsForCurrentPage()
         {
-            if (IsProgMdiProgramEditSoftkeysActive())
-            {
-                return _progMdiSoftKeyPages.Length > 0
-                    ? _progMdiSoftKeyPages[_progMdiSoftKeyPageIndex % _progMdiSoftKeyPages.Length]
-                    : [];
-            }
-
             if (_currentPage == FanucPage.Alarm && _messageSoftKeyPages.Length > 0)
             {
                 return _messageSoftKeyPages[_messageSoftKeyCarouselIndex % _messageSoftKeyPages.Length];
+            }
+
+            if (_currentPage == FanucPage.Offset)
+            {
+                return GetOffsetSoftKeyItems();
+            }
+
+            if (_currentPage == FanucPage.Pos && _posOprtMenuActive)
+            {
+                Action exit = () =>
+                {
+                    _posOprtMenuActive = false;
+                    UpdateSoftKeyBar();
+                };
+
+                // Per reference screenshots: POS OPRT differs by subpage.
+                if (_posSubPage == PosSubPage.Rel)
+                {
+                    return
+                    [
+                        ("<", exit),
+                        ("PRESET", () => LogUserAction("POS OPRT PRESET")),
+                        ("ORIGIN", () => LogUserAction("POS OPRT ORIGIN")),
+                        ("", () => { }),
+                        ("COM:0", () => LogUserAction("POS OPRT COM:0")),
+                        ("RUN:0", () => LogUserAction("POS OPRT RUN:0")),
+                    ];
+                }
+
+                return
+                [
+                    ("<", exit),
+                    ("", () => { }),
+                    ("", () => { }),
+                    ("PTSPRE", () => LogUserAction("POS OPRT PTSPRE")),
+                    ("RUNPRE", () => LogUserAction("POS OPRT RUNPRE")),
+                    ("", () => { }),
+                ];
+            }
+
+            if (_currentPage == FanucPage.Prog && _progOprtMenuActive)
+            {
+                Action exit = () =>
+                {
+                    _progOprtMenuActive = false;
+                    _progOprtMenuPageIndex = 0;
+                    LogUserAction("PROG ← (OPRT)");
+                    UpdateSoftKeyBar();
+                };
+
+                Action nextPage = () =>
+                {
+                    _progOprtMenuPageIndex = (_progOprtMenuPageIndex + 1) % 3;
+                    UpdateSoftKeyBar();
+                };
+
+                return _progOprtMenuPageIndex switch
+                {
+                    0 =>
+                    [
+                        ("<", exit),
+                        ("BG-EDT", () => InvokeBackgroundEditOpenLoadedProgram()),
+                        ("O.SRH", () => InvokeOpenProgramByMdiONameIfExists()),
+                        ("SRH↓", () => SearchInOpenedProgramFromMdi(searchDown: true)),
+                        ("SRH↑", () => SearchInOpenedProgramFromMdi(searchDown: false)),
+                        ("→", nextPage),
+                    ],
+                    1 =>
+                    [
+                        ("<", exit),
+                        ("REWIND", () => RewindNcProgramToStart()),
+                        ("F.SRH", () => SetAlarm("FILE SEARCH", false)),
+                        ("READ", () => SetAlarm("READ", false)),
+                        ("PUNCH", () => LogUserAction("PROG OPRT PUNCH")),
+                        ("→", nextPage),
+                    ],
+                    _ =>
+                    [
+                        ("<", exit),
+                        ("DELETE", () => InvokeDeleteProgramByMdiOName()),
+                        ("INSERT", () => LogUserAction("PROG OPRT INSERT")),
+                        ("COPY", () => LogUserAction("PROG OPRT COPY")),
+                        ("EX-EDT", () => SetAlarm("EXTENDED EDIT", false)),
+                        ("→", nextPage),
+                    ]
+                };
             }
 
             return _softKeyByPage.TryGetValue(_currentPage, out var list)
@@ -1075,12 +1865,28 @@ namespace CNCSS.UI.FanucPanel
             if (page == FanucPage.Prog)
             {
                 _currentProgSubPage = ProgSubPage.ProgramMain;
+                _progOprtMenuActive = false;
+                _progOprtMenuPageIndex = 0;
             }
 
             if (page == FanucPage.Alarm)
             {
                 _messageSubPage = MessageSubPage.CurrentMessage;
                 _messageSoftKeyCarouselIndex = 0;
+            }
+
+            if (page == FanucPage.Offset)
+            {
+                _offsetSubPage = OffsetSubPage.ToolOffset;
+                _offsetOprtMenuActive = false;
+                _offsetInputBuffer = string.Empty;
+                RefreshOffsetInputLine();
+                Dispatcher.BeginInvoke(() => Keyboard.Focus(this), DispatcherPriority.Input);
+            }
+
+            if (page == FanucPage.Pos)
+            {
+                _posOprtMenuActive = false;
             }
 
             UpdatePageVisibility();
@@ -1122,20 +1928,31 @@ namespace CNCSS.UI.FanucPanel
         {
             bool isPos = _currentPage == FanucPage.Pos;
             bool isProg = _currentPage == FanucPage.Prog;
+            bool isOffset = _currentPage == FanucPage.Offset;
 
             PosPagePanel.Visibility = isPos ? Visibility.Visible : Visibility.Collapsed;
             PosCoordinateBorder.Visibility = isPos ? Visibility.Visible : Visibility.Collapsed;
             PosMetricsGrid.Visibility = isPos ? Visibility.Visible : Visibility.Collapsed;
             ProgPageRoot.Visibility = isProg ? Visibility.Visible : Visibility.Collapsed;
+            ScreenDefaultStatusPanel.Visibility = isOffset ? Visibility.Collapsed : Visibility.Visible;
+            ScreenOffsetStatusPanel.Visibility = isOffset ? Visibility.Visible : Visibility.Collapsed;
+            if (isPos)
+            {
+                RefreshPosScreen();
+            }
 
             AlarmPagePanel.Visibility = _currentPage == FanucPage.Alarm ? Visibility.Visible : Visibility.Collapsed;
-            DiagnPagePanel.Visibility = _currentPage == FanucPage.Diagn ? Visibility.Visible : Visibility.Collapsed;
-            OffsetPagePanel.Visibility = _currentPage == FanucPage.Offset ? Visibility.Visible : Visibility.Collapsed;
-            SettingPagePanel.Visibility = _currentPage == FanucPage.Setting ? Visibility.Visible : Visibility.Collapsed;
+            DiagnPagePanel.Visibility = _currentPage == FanucPage.CustomGrph ? Visibility.Visible : Visibility.Collapsed;
+            OffsetPageRoot.Visibility = _currentPage == FanucPage.Offset ? Visibility.Visible : Visibility.Collapsed;
             SystemPagePanel.Visibility = _currentPage == FanucPage.System ? Visibility.Visible : Visibility.Collapsed;
+            if (_currentPage == FanucPage.Offset)
+            {
+                UpdateOffsetScreen();
+                RefreshOffsetStatusFooter();
+            }
             if (MdiInputRowPanel != null)
             {
-                MdiInputRowPanel.Visibility = _currentPage == FanucPage.Pos
+                MdiInputRowPanel.Visibility = _currentPage is FanucPage.Pos or FanucPage.Offset
                     ? Visibility.Collapsed
                     : Visibility.Visible;
             }
@@ -1149,25 +1966,35 @@ namespace CNCSS.UI.FanucPanel
             switch (_currentPage)
             {
                 case FanucPage.Pos:
-                    ScreenModeText.Text = "ACTUAL POSITION(ABSOLUTE)";
+                    ScreenModeText.Text = _posSubPage switch
+                    {
+                        PosSubPage.Rel => "ACTUAL POSITION(RELATIVE)",
+                        PosSubPage.All => "ACTUAL POSITION(ALL)",
+                        _ => "ACTUAL POSITION(ABSOLUTE)"
+                    };
                     break;
                 case FanucPage.Prog:
-                    ScreenModeText.Text = "PROGRAM";
+                    ScreenModeText.Text = _currentProgSubPage == ProgSubPage.ProgramDirectory
+                        ? "PROGRAM DIRECTORY"
+                        : "PROGRAM";
                     break;
                 case FanucPage.Offset:
-                    ScreenModeText.Text = "OFFSET/SETTING";
+                    ScreenModeText.Text = _offsetSubPage switch
+                    {
+                        OffsetSubPage.ToolOffset => "OFFSET",
+                        OffsetSubPage.Setting => "SETTING (HANDY)",
+                        OffsetSubPage.Work => "WORK",
+                        _ => "OFFSET"
+                    };
                     break;
                 case FanucPage.Alarm:
                     UpdateMessageHeaderTitle();
                     break;
-                case FanucPage.Diagn:
-                    ScreenModeText.Text = "DIAGNOSIS";
-                    break;
-                case FanucPage.Setting:
-                    ScreenModeText.Text = "SETTING";
+                case FanucPage.CustomGrph:
+                    ScreenModeText.Text = "GRAPHIC";
                     break;
                 case FanucPage.System:
-                    ScreenModeText.Text = "SYSTEM";
+                    ScreenModeText.Text = "PARAMETER";
                     break;
                 default:
                     ScreenModeText.Text = "PROGRAM";
@@ -1299,80 +2126,13 @@ namespace CNCSS.UI.FanucPanel
         /// <summary>Каталог, из которого строится DIR и куда сохраняются новые программы.</summary>
         public string ResolveNcProgramsDirectory()
         {
-            try
-            {
-                if (!string.IsNullOrEmpty(_ncProgramSourcePath))
-                {
-                    string? d = Path.GetDirectoryName(_ncProgramSourcePath);
-                    if (!string.IsNullOrEmpty(d))
-                    {
-                        return Path.GetFullPath(d);
-                    }
-                }
-            }
-            catch (Exception)
-            {
-                /* ignore */
-            }
-
-            return Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory);
+            return ProgramCatalogService.ResolveProgramsDirectory(_ncProgramSourcePath);
         }
 
         /// <summary>Найти файл программы по имени O0999 и т.п. (расширения .nc, .ngc, .tap).</summary>
         public bool TryResolveNcProgramFile(string normalizedOLine, out string? fullPath)
         {
-            fullPath = null;
-            if (string.IsNullOrEmpty(normalizedOLine))
-            {
-                return false;
-            }
-
-            string dir = ResolveNcProgramsDirectory();
-            try
-            {
-                if (!Directory.Exists(dir))
-                {
-                    string direct = Path.GetFullPath(Path.Combine(dir, normalizedOLine + ".nc"));
-                    if (File.Exists(direct))
-                    {
-                        fullPath = direct;
-                        return true;
-                    }
-
-                    return false;
-                }
-
-                var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (string pattern in new[] { "*.nc", "*.ngc", "*.tap" })
-                {
-                    foreach (string f in Directory.EnumerateFiles(dir, pattern))
-                    {
-                        set.Add(Path.GetFullPath(f));
-                    }
-                }
-
-                foreach (string fp in set.OrderBy(p => Path.GetFileName(p), StringComparer.OrdinalIgnoreCase))
-                {
-                    if (string.Equals(Path.GetFileNameWithoutExtension(fp), normalizedOLine, StringComparison.OrdinalIgnoreCase))
-                    {
-                        fullPath = fp;
-                        return true;
-                    }
-                }
-
-                string fallback = Path.GetFullPath(Path.Combine(dir, normalizedOLine + ".nc"));
-                if (Path.Exists(fallback))
-                {
-                    fullPath = fallback;
-                    return true;
-                }
-            }
-            catch (Exception)
-            {
-                /* ignore */
-            }
-
-            return false;
+            return ProgramCatalogService.TryResolveProgramFile(_ncProgramSourcePath, normalizedOLine, out fullPath);
         }
 
         /// <summary>PROG DIR: постраничное перелистывание списка (используется клавишами PAGE и кнопками).</summary>
@@ -1941,6 +2701,13 @@ namespace CNCSS.UI.FanucPanel
             ProgSpindleLoadMirrorText.Text = lLine;
             ScreenSpindleText.Text = sLine;
             ScreenPosCoolantText.Text = lLine;
+            RefreshOffsetStatusFooter();
+        }
+
+        private void RefreshOffsetStatusFooter()
+        {
+            OffsetStatusModeText.Text = _modeStatusAbbrev;
+            OffsetStatusSpindleText.Text = $"S  {_lastSpindleRpm:F0}  L{_feedOverridePercent:F0}%";
         }
 
         private void JogStepComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -2008,8 +2775,20 @@ namespace CNCSS.UI.FanucPanel
             MdiInputTextBox.Focus();
         }
 
-        private void MdiInputTextBox_TextChanged(object sender, TextChangedEventArgs e) =>
+        private void MdiInputTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            // Per PDF: PRGRM/DIR and typing opens OPRT menu.
+            if (_currentPage == FanucPage.Prog
+                && (_currentProgSubPage is ProgSubPage.ProgramMain or ProgSubPage.ProgramDirectory)
+                && !string.IsNullOrWhiteSpace(MdiInputTextBox.Text))
+            {
+                _progOprtMenuActive = true;
+                _progOprtMenuPageIndex = 0;
+            }
+
             RefreshProgMdiTypingSoftkeys();
+            UpdateSoftKeyBar();
+        }
 
         private void MdiInputTextBox_FocusChangedHandler(object sender, RoutedEventArgs e) =>
             Dispatcher.BeginInvoke(RefreshProgMdiTypingSoftkeys, DispatcherPriority.Input);

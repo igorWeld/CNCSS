@@ -46,6 +46,11 @@ namespace CNCSS.Data
         /// <summary>G30: Возврат во вторую референтную точку.</summary>
         public static readonly GCodeTemplate G30 = new(LETTER_G, 30, CommandModality.NonModal);
 
+        /// <summary>
+        /// G53: Перемещение в машинной системе координат (MCS) в текущем кадре (нек модальный).
+        /// </summary>
+        public static readonly GCodeTemplate G53 = new(LETTER_G, 53, CommandModality.NonModal);
+
         /// <summary>G40: Отмена коррекции на радиус инструмента.</summary>
         public static readonly GCodeTemplate G40 = new(LETTER_G, 40, CommandModality.Modal);
         /// <summary>G41: Коррекция на радиус слева.</summary>
@@ -163,6 +168,7 @@ namespace CNCSS.Data
             G20, G21, G90, G91,
             G17, G18, G19,
             G28, G30,
+            G53,
             G40, G41, G42,
             G43, G44, G49,
             G54, G55, G56, G57, G58, G59,

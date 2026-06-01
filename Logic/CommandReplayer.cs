@@ -1,4 +1,5 @@
 using CNCSS.Data;
+using CNCSS.Machine.Model;
 
 namespace CNCSS.Logic
 {
@@ -52,7 +53,36 @@ namespace CNCSS.Logic
             if (cmd.X.HasValue || cmd.Y.HasValue || cmd.Z.HasValue ||
                 cmd.A.HasValue || cmd.B.HasValue || cmd.C.HasValue)
             {
-                parser.State.UpdatePosition(cmd.X, cmd.Y, cmd.Z, cmd.A, cmd.B, cmd.C);
+                // Mirror GCodeParser coordinate resolution:
+                // - In absolute mode, add active WCS offset (unless G53 on this block) and MCS zero offset.
+                // - In incremental mode, apply deltas directly.
+                bool useMachineCoordinatesThisBlock = cmd.GCodes.Any(g => g.Number == 53);
+                var activeWcs = parser.State.GetActiveWorkOffset();
+                double wX = useMachineCoordinatesThisBlock ? 0 : activeWcs.X;
+                double wY = useMachineCoordinatesThisBlock ? 0 : activeWcs.Y;
+                double wZ = useMachineCoordinatesThisBlock ? 0 : activeWcs.Z;
+                double mX = parser.State.IsAbsolute ? parser.State.MachineZeroOffsetX : 0;
+                double mY = parser.State.IsAbsolute ? parser.State.MachineZeroOffsetY : 0;
+                double mZ = parser.State.IsAbsolute ? parser.State.MachineZeroOffsetZ : 0;
+
+                parser.State.SavePreviousPosition();
+                if (cmd.X.HasValue) parser.State.X = parser.State.IsAbsolute ? cmd.X.Value + (wX + mX) : parser.State.X + cmd.X.Value;
+                if (cmd.Y.HasValue) parser.State.Y = parser.State.IsAbsolute ? cmd.Y.Value + (wY + mY) : parser.State.Y + cmd.Y.Value;
+                if (cmd.Z.HasValue)
+                {
+                    parser.State.Z = parser.State.IsAbsolute
+                        ? cmd.Z.Value + (wZ + mZ)
+                        : parser.State.Z + cmd.Z.Value;
+                }
+                if (cmd.A.HasValue) parser.State.A = parser.State.IsAbsolute ? cmd.A.Value : parser.State.A + cmd.A.Value;
+                if (cmd.B.HasValue) parser.State.B = parser.State.IsAbsolute ? cmd.B.Value : parser.State.B + cmd.B.Value;
+                if (cmd.C.HasValue) parser.State.C = parser.State.IsAbsolute ? cmd.C.Value : parser.State.C + cmd.C.Value;
+            }
+
+            if (cmd.GCodes.Any(g => g.Number == 28) || cmd.MCodes.Any(m => m.Number == 6))
+            {
+                var (homeX, homeY, homeZ) = parser.State.GetG28PhysicalPosition();
+                parser.State.SetPosition(homeX, homeY, homeZ, parser.State.A, parser.State.B, parser.State.C);
             }
         }
 
@@ -103,8 +133,6 @@ namespace CNCSS.Logic
                 state.SetToolLengthCompensation(GCodeRegistry.GetGCode(number) ?? state.ToolLengthCompensation);
             else if (number is >= 0 and <= 3)
                 state.SetMotionMode(GCodeRegistry.GetGCode(number) ?? state.CurrentMotionMode);
-            else if (number == 28)
-                state.SetPosition(MachineState.HOME_X, MachineState.HOME_Y, MachineState.HOME_Z, state.A, state.B, state.C);
         }
 
         public static void ApplyMCodeToState(MachineState state, int number)
@@ -112,7 +140,6 @@ namespace CNCSS.Logic
             if (number == 3) state.SetSpindle(true, true);
             else if (number == 4) state.SetSpindle(true, false);
             else if (number == 5) state.SetSpindle(false);
-            else if (number == 6) state.SetPosition(MachineState.HOME_X, MachineState.HOME_Y, MachineState.HOME_Z, state.A, state.B, state.C);
             else if (number == 7 || number == 8) state.SetCoolant(true);
             else if (number == 9) state.SetCoolant(false);
         }

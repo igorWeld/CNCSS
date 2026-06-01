@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
 using CNCSS.Data;
+using CNCSS.Machine.Model;
 using System.Diagnostics;
 
 namespace CNCSS.Logic
@@ -187,6 +188,18 @@ namespace CNCSS.Logic
                 return;
             }
 
+            // G53 is non-modal and applies only to this block: ignore WCS offsets.
+            bool useMachineCoordinatesThisBlock = command.GCodes.Any(g => g.Number == 53);
+            var activeWcs = State.GetActiveWorkOffset();
+            double wX = useMachineCoordinatesThisBlock ? 0 : activeWcs.X;
+            double wY = useMachineCoordinatesThisBlock ? 0 : activeWcs.Y;
+            double wZ = useMachineCoordinatesThisBlock ? 0 : activeWcs.Z;
+            // Machine zero offset is always applied in absolute mode.
+            // Physical axis pose = MCS pose + MachineZeroOffset.
+            double mX = State.IsAbsolute ? State.MachineZeroOffsetX : 0;
+            double mY = State.IsAbsolute ? State.MachineZeroOffsetY : 0;
+            double mZ = State.IsAbsolute ? State.MachineZeroOffsetZ : 0;
+
             if (parameters.ContainsKey(GCodeRegistry.PARAM_F))
             {
                 State.SetFeedRate(parameters[GCodeRegistry.PARAM_F]);
@@ -224,19 +237,19 @@ namespace CNCSS.Logic
 
             if (parameters.ContainsKey(GCodeRegistry.PARAM_X))
             {
-                newX = ResolveAxisTarget(parameters[GCodeRegistry.PARAM_X], State.X, State.GetActiveWorkOffset().X);
+                newX = ResolveAxisTarget(parameters[GCodeRegistry.PARAM_X], State.X, wX + mX);
                 command.X = parameters[GCodeRegistry.PARAM_X];
             }
 
             if (parameters.ContainsKey(GCodeRegistry.PARAM_Y))
             {
-                newY = ResolveAxisTarget(parameters[GCodeRegistry.PARAM_Y], State.Y, State.GetActiveWorkOffset().Y);
+                newY = ResolveAxisTarget(parameters[GCodeRegistry.PARAM_Y], State.Y, wY + mY);
                 command.Y = parameters[GCodeRegistry.PARAM_Y];
             }
 
             if (parameters.ContainsKey(GCodeRegistry.PARAM_Z))
             {
-                newZ = ResolveAxisTarget(parameters[GCodeRegistry.PARAM_Z], State.Z, State.GetActiveWorkOffset().Z);
+                newZ = ResolveAxisTarget(parameters[GCodeRegistry.PARAM_Z], State.Z, wZ + mZ);
                 command.Z = parameters[GCodeRegistry.PARAM_Z];
             }
 
@@ -258,6 +271,49 @@ namespace CNCSS.Logic
                 command.C = parameters[GCodeRegistry.PARAM_C];
             }
 
+            // Tool length compensation (G43/G44) affects machine Z target.
+            if (State.ToolLengthCompensation.Number is 43 or 44
+                && State.ToolLengthOffset.HasValue
+                && parameters.ContainsKey(GCodeRegistry.PARAM_Z))
+            {
+                double h = State.GetEffectiveToolLength(State.ToolLengthOffset.Value);
+                if (Math.Abs(h) > 0.0000001)
+                {
+                    // Our machine axis convention uses Z+ upwards; to keep tool tip at programmed Z,
+                    // G43 (positive length compensation) shifts the machine axis in the negative Z direction.
+                    // G44 applies the opposite sign.
+                    newZ += State.ToolLengthCompensation.Number == 44 ? h : -h;
+                }
+            }
+
+            // Cutter radius compensation: simple linear offset for G17 plane (XY).
+            if (State.CurrentPlane.Number == 17
+                && State.CutterCompensation.Number is 41 or 42
+                && State.ToolRadiusOffset.HasValue
+                && (parameters.ContainsKey(GCodeRegistry.PARAM_X) || parameters.ContainsKey(GCodeRegistry.PARAM_Y)))
+            {
+                double r = State.GetEffectiveToolRadius(State.ToolRadiusOffset.Value);
+                if (Math.Abs(r) > 0.0000001)
+                {
+                    double sx = State.X;
+                    double sy = State.Y;
+                    double dx = newX - sx;
+                    double dy = newY - sy;
+                    double len = Math.Sqrt(dx * dx + dy * dy);
+                    if (len > 0.000001)
+                    {
+                        dx /= len;
+                        dy /= len;
+                        // left normal = (-dy, dx)
+                        double nx = -dy;
+                        double ny = dx;
+                        double side = State.CutterCompensation.Number == 41 ? 1.0 : -1.0;
+                        newX += nx * r * side;
+                        newY += ny * r * side;
+                    }
+                }
+            }
+
             command.Arc = null;
             if (GCodeRegistry.IsArcCode(State.CurrentMotionMode))
             {
@@ -277,10 +333,12 @@ namespace CNCSS.Logic
 
             if (command.GCodes.Any(g => g.Number == 28) || command.MCodes.Any(m => m.Number == 6))
             {
-                // Смена инструмента или G28 принудительно устанавливают координаты в точку смены
-                newX = MachineState.HOME_X;
-                newY = MachineState.HOME_Y;
-                newZ = MachineState.HOME_Z;
+                // G28 / M6: физическая HOME из профиля (HOME по осям в MCS + смещение MCS).
+                (newX, newY, newZ) = State.GetG28PhysicalPosition();
+                if (command.GCodes.Any(g => g.Number == 28))
+                {
+                    State.IsMachineReferenced = true;
+                }
                 State.SetPosition(newX, newY, newZ, newA, newB, newC);
                 return;
             }

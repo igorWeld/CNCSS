@@ -31,12 +31,20 @@ namespace CNCSS.UI.Presenters
                     bool isAlreadyVisible = _visibleVisuals.Contains(visual);
                     if (isVisible && !isAlreadyVisible)
                     {
-                        viewport.Children.Add(visual);
+                        // Visual3D cannot be added twice; it might already be in the viewport
+                        // (e.g. after rebuild) while our visible set was Reset().
+                        if (!viewport.Children.Contains(visual))
+                        {
+                            viewport.Children.Add(visual);
+                        }
                         _visibleVisuals.Add(visual);
                     }
                     else if (!isVisible && isAlreadyVisible)
                     {
-                        viewport.Children.Remove(visual);
+                        if (viewport.Children.Contains(visual))
+                        {
+                            viewport.Children.Remove(visual);
+                        }
                         _visibleVisuals.Remove(visual);
                     }
                 }

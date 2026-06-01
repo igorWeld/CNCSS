@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -16,8 +18,22 @@ namespace CNCSS.UI.Dialogs
         private readonly Action<ToolViewModel> _registerTool;
         private readonly Action<ToolViewModel> _unregisterTool;
         private readonly Action _onApplied;
+        private bool _isInitializing;
+
+        public static readonly DependencyProperty IsDirtyProperty =
+            DependencyProperty.Register(
+                nameof(IsDirty),
+                typeof(bool),
+                typeof(ToolSettingsWindow),
+                new PropertyMetadata(false));
 
         public ObservableCollection<ToolEditRowViewModel> Rows { get; } = new();
+
+        public bool IsDirty
+        {
+            get => (bool)GetValue(IsDirtyProperty);
+            private set => SetValue(IsDirtyProperty, value);
+        }
 
         public ToolSettingsWindow(
             ObservableCollection<ToolViewModel> tools,
@@ -33,14 +49,53 @@ namespace CNCSS.UI.Dialogs
             _unregisterTool = unregisterToolPropertyChanged;
             _onApplied = onApplied;
             DataContext = this;
+            Rows.CollectionChanged += Rows_CollectionChanged;
 
+            _isInitializing = true;
             foreach (ToolViewModel vm in tools.OrderBy(t => t.Number))
             {
-                Rows.Add(new ToolEditRowViewModel(vm));
+                AddRow(new ToolEditRowViewModel(vm), markDirty: false);
             }
+            _isInitializing = false;
 
             Loaded += (_, _) => UpdateEmptyState();
             UpdateEmptyState();
+        }
+
+        private void Rows_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+        {
+            if (e.OldItems != null)
+            {
+                foreach (ToolEditRowViewModel row in e.OldItems)
+                {
+                    row.PropertyChanged -= Row_PropertyChanged;
+                }
+            }
+
+            if (e.NewItems != null)
+            {
+                foreach (ToolEditRowViewModel row in e.NewItems)
+                {
+                    row.PropertyChanged += Row_PropertyChanged;
+                }
+            }
+        }
+
+        private void Row_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (!_isInitializing && e.PropertyName != nameof(ToolEditRowViewModel.PreviewModel))
+            {
+                IsDirty = true;
+            }
+        }
+
+        private void AddRow(ToolEditRowViewModel row, bool markDirty)
+        {
+            Rows.Add(row);
+            if (markDirty)
+            {
+                IsDirty = true;
+            }
         }
 
         private void UpdateEmptyState()
@@ -70,7 +125,7 @@ namespace CNCSS.UI.Dialogs
             vm.FluteColor = ToolPaletteSwatches.NextRandomDistinctFluteColor(_toolsBacking.Select(t => t.FluteColor));
             _registerTool.Invoke(vm);
             _toolsBacking.Add(vm);
-            Rows.Add(new ToolEditRowViewModel(vm));
+            AddRow(new ToolEditRowViewModel(vm), markDirty: true);
             UpdateEmptyState();
         }
 
@@ -94,7 +149,9 @@ namespace CNCSS.UI.Dialogs
 
             _unregisterTool.Invoke(row.Source);
             _toolsBacking.Remove(row.Source);
+            row.PropertyChanged -= Row_PropertyChanged;
             Rows.Remove(row);
+            IsDirty = true;
             UpdateEmptyState();
         }
 
@@ -153,6 +210,7 @@ namespace CNCSS.UI.Dialogs
             }
 
             _onApplied.Invoke();
+            IsDirty = false;
         }
     }
 }

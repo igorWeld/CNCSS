@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CNCSS.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\Assets\Default_Maschine.stp" Link="Assets\Default_Maschine.stp">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <Target Name="CopyOcctRuntimeFromApp" AfterTargets="Build">
+    <PropertyGroup>
+      <_AppOutDir>$(MSBuildThisFileDirectory)..\bin\x64\$(Configuration)\$(TargetFramework)\</_AppOutDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_OcctRuntime Include="$(_AppOutDir)occt\**\*.*" Condition="Exists('$(_AppOutDir)occt\x64\TKernel.dll')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_OcctRuntime)"
+          DestinationFiles="@(_OcctRuntime->'$(TargetDir)occt\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true"
+          Condition="'@(_OcctRuntime)' != ''" />
+  </Target>
+
+</Project>

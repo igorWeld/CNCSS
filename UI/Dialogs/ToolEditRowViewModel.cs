@@ -24,6 +24,7 @@ namespace CNCSS.UI.Dialogs
         private string _fluteLengthText = "30";
         private string _overallLengthText = "75";
         private string _flutesText = "2";
+        private string _pointAngleText = "120";
         private Color _selectedFluteColor = WpfColors.Goldenrod;
         private ToolType _selectedType;
 
@@ -38,6 +39,7 @@ namespace CNCSS.UI.Dialogs
             _fluteLengthText = source.FluteLength.ToString(CultureInfo.InvariantCulture);
             _overallLengthText = source.OverallLength.ToString(CultureInfo.InvariantCulture);
             _flutesText = source.Flutes.ToString(CultureInfo.InvariantCulture);
+            _pointAngleText = source.PointAngle.ToString(CultureInfo.InvariantCulture);
             _selectedType = source.SelectedType;
             _selectedFluteColor = source.FluteColor;
             _previewModel = BuildPreviewModels();
@@ -111,13 +113,37 @@ namespace CNCSS.UI.Dialogs
             set { _flutesText = value ?? string.Empty; OnPropertyChanged(); RebuildPreviewSafe(); }
         }
 
+        public string PointAngleText
+        {
+            get => _pointAngleText;
+            set { _pointAngleText = value ?? string.Empty; OnPropertyChanged(); RebuildPreviewSafe(); }
+        }
+
         public IEnumerable<ToolType> ToolKinds => Enum.GetValues(typeof(ToolType)).Cast<ToolType>();
 
         public ToolType SelectedType
         {
             get => _selectedType;
-            set { _selectedType = value; OnPropertyChanged(); RebuildPreviewSafe(); }
+            set
+            {
+                var prev = _selectedType;
+                _selectedType = value;
+                OnPropertyChanged();
+                if (value == ToolType.FaceMill && prev != ToolType.FaceMill)
+                {
+                    DiameterText = "30";
+                    ShankDiameterText = "28";
+                    FluteLengthText = "10";
+                    OverallLengthText = "75";
+                    FlutesText = "5";
+                }
+
+                OnPropertyChanged(nameof(IsDrillRow));
+                RebuildPreviewSafe();
+            }
         }
+
+        public bool IsDrillRow => SelectedType == ToolType.Drill;
 
         public IReadOnlyList<Color> PaletteSwatches => ToolPaletteSwatches.Swatches;
 
@@ -193,13 +219,24 @@ namespace CNCSS.UI.Dialogs
                 return false;
             }
 
+            double pointAngle = Source.PointAngle;
+            if (SelectedType == ToolType.Drill)
+            {
+                if (!TryInvariantDouble(PointAngleText, out pointAngle) || pointAngle < 1.0 || pointAngle >= 179.5)
+                {
+                    error = "Угол при вершине для сверла — от 1° до 179°.";
+                    return false;
+                }
+            }
+
+            Source.SelectedType = SelectedType;
             Source.Number = toolNum;
             Source.Diameter = diameter;
             Source.ShankDiameter = shankDiameter;
             Source.FluteLength = fluteLen;
             Source.OverallLength = overall;
             Source.Flutes = flutes;
-            Source.SelectedType = SelectedType;
+            Source.PointAngle = pointAngle;
             Source.FluteColor = SelectedFluteColor;
 
             error = string.Empty;
@@ -223,6 +260,13 @@ namespace CNCSS.UI.Dialogs
             double shankForPreview = PreviewOr(Source.ShankDiameter, ShankDiameterText);
             double shankRadius = Math.Max(0.1, shankForPreview / 2.0);
             Color flute = SelectedFluteColor;
+            if (SelectedType == ToolType.Drill)
+            {
+                double pt = PreviewOr(Source.PointAngle, PointAngleText);
+                pt = Math.Clamp(pt, 1.0, 179.0);
+                return ToolPreviewGeometry.BuildDrillTool(fluteRadius, shankRadius, flForPreview, olForPreview, pt, flute, WpfColors.Gray);
+            }
+
             return ToolPreviewGeometry.BuildCylinderTool(fluteRadius, shankRadius, flForPreview, olForPreview, flute, WpfColors.Gray);
         }
 

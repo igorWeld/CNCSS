@@ -11,7 +11,44 @@
         Height="720" Width="1100"
         WindowStartupLocation="CenterScreen">
     <Window.Resources>
-        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/UI/Themes/FanucPanelResources.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+
+            <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+
+            <!-- Fanuc-like filter icon toggle -->
+            <Style x:Key="SceneFilterIconToggle" TargetType="ToggleButton" BasedOn="{StaticResource FanucPanelToggle}">
+                <Setter Property="Width" Value="36"/>
+                <Setter Property="Height" Value="36"/>
+                <Setter Property="MinHeight" Value="0"/>
+                <Setter Property="Margin" Value="0,0,0,6"/>
+                <Setter Property="Padding" Value="0"/>
+            </Style>
+
+            <Style x:Key="SceneFilterIconStroke" TargetType="Path">
+                <Setter Property="Stroke" Value="#FF2F2F2F"/>
+                <Setter Property="StrokeThickness" Value="2"/>
+                <Setter Property="StrokeStartLineCap" Value="Round"/>
+                <Setter Property="StrokeEndLineCap" Value="Round"/>
+                <Setter Property="StrokeLineJoin" Value="Round"/>
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                        <Setter Property="Stroke" Value="#FF0F2A38"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+
+            <Style x:Key="SceneFilterIconFill" TargetType="Shape">
+                <Setter Property="Fill" Value="#FF2F2F2F"/>
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                        <Setter Property="Fill" Value="#FF0F2A38"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </ResourceDictionary>
     </Window.Resources>
     <DockPanel>
         <Menu DockPanel.Dock="Top">
@@ -24,6 +61,34 @@
                 <MenuItem Header="Программа..." Click="MenuProgramDialog_Click"/>
                 <MenuItem Header="Инструмент..." Click="MenuToolsDialog_Click"/>
                 <MenuItem Header="Заготовка..." Click="MenuStockDialog_Click"/>
+                <MenuItem Header="Быстрые действия">
+                    <MenuItem Header="Установить ноль" Click="MenuQuickWcsZero_Click"/>
+                </MenuItem>
+                <MenuItem Header="Нулевая точка детали (WCS)">
+                    <MenuItem Header="Центр заготовки (XY)">
+                        <MenuItem Header="Верхний торец (Z max)" Click="MenuStockWcsZero_Click" Tag="Center,Top"/>
+                        <MenuItem Header="Нижний торец (Z min)" Click="MenuStockWcsZero_Click" Tag="Center,Bottom"/>
+                    </MenuItem>
+                    <MenuItem Header="Угол заготовки (XY)">
+                        <MenuItem Header="Min X, Min Y">
+                            <MenuItem Header="Верхний торец (Z max)" Click="MenuStockWcsZero_Click" Tag="MinMin,Top"/>
+                            <MenuItem Header="Нижний торец (Z min)" Click="MenuStockWcsZero_Click" Tag="MinMin,Bottom"/>
+                        </MenuItem>
+                        <MenuItem Header="Max X, Min Y">
+                            <MenuItem Header="Верхний торец (Z max)" Click="MenuStockWcsZero_Click" Tag="MaxMin,Top"/>
+                            <MenuItem Header="Нижний торец (Z min)" Click="MenuStockWcsZero_Click" Tag="MaxMin,Bottom"/>
+                        </MenuItem>
+                        <MenuItem Header="Min X, Max Y">
+                            <MenuItem Header="Верхний торец (Z max)" Click="MenuStockWcsZero_Click" Tag="MinMax,Top"/>
+                            <MenuItem Header="Нижний торец (Z min)" Click="MenuStockWcsZero_Click" Tag="MinMax,Bottom"/>
+                        </MenuItem>
+                        <MenuItem Header="Max X, Max Y">
+                            <MenuItem Header="Верхний торец (Z max)" Click="MenuStockWcsZero_Click" Tag="MaxMax,Top"/>
+                            <MenuItem Header="Нижний торец (Z min)" Click="MenuStockWcsZero_Click" Tag="MaxMax,Bottom"/>
+                        </MenuItem>
+                    </MenuItem>
+                </MenuItem>
+                <Separator/>
                 <Separator/>
                 <MenuItem Header="Скорость">
                     <MenuItem Header="x2" Click="MenuSpeedPreset_Click" Tag="2"/>
@@ -42,6 +107,12 @@
                     <MenuItem Header="Применить параметры заготовки" Click="ApplyStock_Click"/>
                 </MenuItem>
             </MenuItem>
+            <MenuItem Header="_Станок">
+                <MenuItem Header="Настройка модели станка…" Click="MenuMachineSetup_Click"/>
+                <MenuItem Header="Выбрать профиль станка…" Click="MenuMachineProfile_Click"/>
+                <Separator/>
+                <MenuItem Header="Сбросить заводской профиль" Click="MenuMachineFactoryReset_Click"/>
+            </MenuItem>
             <MenuItem Header="_Окна">
                 <MenuItem x:Name="MenuFanucWindowItem" Header="Стойка FANUC" IsCheckable="True" IsChecked="True"
                           Checked="MenuFanucWindowItem_Checked" Unchecked="MenuFanucWindowItem_Unchecked"/>
@@ -52,6 +123,10 @@
                 <MenuItem Header="Подогнать камеру" Click="ZoomExtents_Click" InputGestureText="F"/>
             </MenuItem>
             <MenuItem Header="_Настройки">
+                <MenuItem x:Name="MenuGpuVerificationItem" Header="GPU — верификация всей УП"
+                          IsCheckable="True" IsChecked="True"
+                          Checked="MenuGpuVerificationItem_CheckedChanged"
+                          Unchecked="MenuGpuVerificationItem_CheckedChanged"/>
                 <MenuItem Header="Параметры симуляции">
                     <MenuItem.HeaderTemplate>
                         <DataTemplate>
@@ -78,6 +153,10 @@
                 <TextBlock x:Name="StatusText" Text="Готов" Margin="5,0"/>
             </StatusBarItem>
             <Separator Background="#40FFFFFF"/>
+            <StatusBarItem>
+                <TextBlock x:Name="RuntimeLoadText" Text="CPU: 0% | GPU: 0%" Margin="4,0" FontSize="11" Foreground="#FF9FD7FF"/>
+            </StatusBarItem>
+            <Separator Background="#40FFFFFF"/>
             <StatusBarItem HorizontalContentAlignment="Stretch">
                 <Grid Width="300">
                     <ProgressBar x:Name="MainProgressBar" Height="14" Minimum="0" Maximum="100" Value="0" Background="#40FFFFFF" Foreground="SkyBlue" BorderThickness="0"/>
@@ -99,6 +178,65 @@
                                 ShowCoordinateSystem="True">
                 <hx:DefaultLights/>
             </hx:HelixViewport3D>
+
+            <!-- Left-side scene filters (Fanuc style, no panel background) -->
+            <StackPanel Grid.Column="0"
+                        Panel.ZIndex="40"
+                        VerticalAlignment="Center"
+                        HorizontalAlignment="Left"
+                        Margin="10,0,0,0">
+                    <!-- Order like SprutCAM toolbar -->
+                    <!-- 1) Toolpath -->
+                    <ToggleButton x:Name="FilterShowToolpath" Style="{StaticResource SceneFilterIconToggle}" IsChecked="True"
+                                  Checked="SceneFilter_Changed" Unchecked="SceneFilter_Changed"
+                                  ToolTip="Показывать траектории движения">
+                        <Viewbox Width="22" Height="22">
+                            <Canvas Width="24" Height="24">
+                                <Path Style="{StaticResource SceneFilterIconStroke}" Data="M2,18 C6,7 10,21 14,10 C16,5 20,9 22,4"/>
+                            </Canvas>
+                        </Viewbox>
+                    </ToggleButton>
+
+                    <!-- 2) Machine (base + table + spindle + extras) -->
+                    <ToggleButton x:Name="FilterShowMachine" Style="{StaticResource SceneFilterIconToggle}" IsChecked="True"
+                                  Checked="SceneFilter_Changed" Unchecked="SceneFilter_Changed"
+                                  ToolTip="Станок">
+                        <Viewbox Width="22" Height="22">
+                            <Canvas Width="24" Height="24">
+                                <!-- Simple "machine" glyph: base + column + head -->
+                                <Rectangle Width="18" Height="5" Canvas.Left="3" Canvas.Top="17" Style="{StaticResource SceneFilterIconFill}"/>
+                                <Rectangle Width="6" Height="10" Canvas.Left="9" Canvas.Top="7" Style="{StaticResource SceneFilterIconFill}"/>
+                                <Rectangle Width="10" Height="4" Canvas.Left="7" Canvas.Top="4" Style="{StaticResource SceneFilterIconFill}"/>
+                            </Canvas>
+                        </Viewbox>
+                    </ToggleButton>
+
+                    <!-- 3) Stock / part -->
+                    <ToggleButton x:Name="FilterShowStock" Style="{StaticResource SceneFilterIconToggle}" IsChecked="True"
+                                  Checked="SceneFilter_Changed" Unchecked="SceneFilter_Changed"
+                                  ToolTip="Показывать заготовку">
+                        <Viewbox Width="22" Height="22">
+                            <Canvas Width="24" Height="24">
+                                <Path Style="{StaticResource SceneFilterIconStroke}" Data="M6,9 L12,5 L18,9 L12,13 Z"/>
+                                <Path Style="{StaticResource SceneFilterIconStroke}" Data="M6,9 L6,16 L12,20 L12,13"/>
+                                <Path Style="{StaticResource SceneFilterIconStroke}" Data="M18,9 L18,16 L12,20"/>
+                            </Canvas>
+                        </Viewbox>
+                    </ToggleButton>
+
+                    <!-- Tool (similar style) -->
+                    <ToggleButton x:Name="FilterShowTool" Style="{StaticResource SceneFilterIconToggle}" IsChecked="True"
+                                  Checked="SceneFilter_Changed" Unchecked="SceneFilter_Changed"
+                                  ToolTip="Показывать инструмент">
+                        <Viewbox Width="22" Height="22">
+                            <Canvas Width="24" Height="24">
+                                <Path Style="{StaticResource SceneFilterIconStroke}" Data="M12,3 L12,14"/>
+                                <Path Style="{StaticResource SceneFilterIconStroke}" Data="M9,14 L15,14 L13,21 L11,21 Z"/>
+                                <Path Style="{StaticResource SceneFilterIconStroke}" Data="M10,16 L14,16"/>
+                            </Canvas>
+                        </Viewbox>
+                    </ToggleButton>
+            </StackPanel>
 
             <!-- Floating panels over 3D (FANUC last = on top). -->
             <Canvas Grid.Column="0" Panel.ZIndex="50" IsHitTestVisible="True">
@@ -309,14 +447,40 @@
                     VerticalAlignment="Center" 
                     HorizontalAlignment="Center" 
                     Padding="20,15"
-                    Background="#D0000000" 
+                    Background="#D0000000"
                     CornerRadius="12"
                     x:Name="StockProgressPanel"
                     Visibility="Collapsed"
                     IsHitTestVisible="False">
                 <StackPanel HorizontalAlignment="Center">
-                    <TextBlock Text="Расчет воксельной модели..." Foreground="SkyBlue" FontSize="14" FontWeight="Bold" Margin="0,0,0,10" HorizontalAlignment="Center"/>
-                    <ProgressBar x:Name="StockProgressBar" Height="8" Width="300" Minimum="0" Maximum="100" IsIndeterminate="True" Foreground="SkyBlue" Background="#40FFFFFF" BorderThickness="0"/>
+                    <TextBlock Text="Расчет воксельной модели..."
+                               Foreground="SkyBlue"
+                               FontSize="14"
+                               FontWeight="Bold"
+                               Margin="0,0,0,8"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="StockProgressText"
+                               Text="0 / 0 чанков"
+                               Foreground="SkyBlue"
+                               FontSize="13"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,10"
+                               HorizontalAlignment="Center"/>
+                    <ProgressBar x:Name="StockProgressBar"
+                                 Height="8"
+                                 Width="300"
+                                 Minimum="0"
+                                 Maximum="100"
+                                 IsIndeterminate="True"
+                                 Foreground="SkyBlue"
+                                 Background="#40FFFFFF"
+                                 BorderThickness="0"/>
+                    <TextBlock x:Name="StockLoadText"
+                               Text="CPU: 0% | GPU: 0%"
+                               Foreground="#B0CDE8FF"
+                               FontSize="10"
+                               Margin="0,6,0,0"
+                               HorizontalAlignment="Center"/>
                 </StackPanel>
             </Border>
 
@@ -351,7 +515,6 @@
                     <Button x:Name="MediumResButton" Tag="0.3" Click="ResButton_Click"/>
                     <Button x:Name="CoarseResButton" Tag="0.6" Click="ResButton_Click"/>
                     <CheckBox x:Name="AutoStockCheck" IsChecked="True"/>
-                    <StackPanel x:Name="LegacyControlsPanel"/>
                 </Grid>
             </Border>
         </Grid>

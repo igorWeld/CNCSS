@@ -21,11 +21,6 @@ namespace CNCSS.Data
             }
         }
 
-        // Константы домашней позиции (Home)
-        public const double HOME_X = ProjectConstants.DEFAULT_HOME_X;
-        public const double HOME_Y = ProjectConstants.DEFAULT_HOME_Y;
-        public const double HOME_Z = ProjectConstants.DEFAULT_HOME_Z;
-        
         /// <summary>Скорость ускоренного перемещения (G0) по умолчанию, мм/мин.</summary>
         public static double RAPID_FEED = ProjectConstants.DEFAULT_RAPID_FEED;
 
@@ -59,18 +54,18 @@ namespace CNCSS.Data
         /// <summary>Коррекция на длину инструмента (G43, G44, G49).</summary>
         public GCodeTemplate ToolLengthCompensation { get; set; } = GCodeRegistry.G49;
 
-        // Текущие координаты осей
-        public double X { get; set; } = HOME_X;
-        public double Y { get; set; } = HOME_Y;
-        public double Z { get; set; } = HOME_Z;
+        // Текущие координаты осей (физические, мм)
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double Z { get; set; }
         public double A { get; set; }
         public double B { get; set; }
         public double C { get; set; }
 
         // Предыдущие координаты (для расчета перемещений)
-        public double PreviousX { get; private set; } = HOME_X;
-        public double PreviousY { get; private set; } = HOME_Y;
-        public double PreviousZ { get; private set; } = HOME_Z;
+        public double PreviousX { get; private set; }
+        public double PreviousY { get; private set; }
+        public double PreviousZ { get; private set; }
         public double PreviousA { get; private set; }
         public double PreviousB { get; private set; }
         public double PreviousC { get; private set; }
@@ -105,7 +100,48 @@ namespace CNCSS.Data
         public int? ToolNumber { get; set; }
         public int? ToolLengthOffset { get; set; }
         public int? ToolRadiusOffset { get; set; }
+
+        /// <summary>
+        /// Признак, что станок прошёл референс (ZRN) и машинная система координат (MCS) валидна.
+        /// В симуляции используется для будущих ограничений G53/абсолютных расчётов.
+        /// </summary>
+        public bool IsMachineReferenced { get; set; }
+
+        /// <summary>Таблица коррекций длины инструмента (H): GEOM + WEAR.</summary>
+        public Dictionary<int, double> ToolLengthGeom { get; } = new();
+        public Dictionary<int, double> ToolLengthWear { get; } = new();
+
+        /// <summary>Таблица коррекций радиуса инструмента (D): GEOM + WEAR.</summary>
+        public Dictionary<int, double> ToolRadiusGeom { get; } = new();
+        public Dictionary<int, double> ToolRadiusWear { get; } = new();
         public Dictionary<int, WorkOffset> WorkOffsets { get; } = new();
+
+        /// <summary>
+        /// Смещение нуля машинной системы координат (MCS) относительно физической (сырой) позиции осей.
+        /// Физическая_позиция = MCS_позиция + MachineZeroOffset.
+        /// </summary>
+        public double MachineZeroOffsetX { get; set; }
+        public double MachineZeroOffsetY { get; set; }
+        public double MachineZeroOffsetZ { get; set; }
+
+        /// <summary>HOME по осям в MCS (мм) из профиля станка. Физическая цель G28/M6 = это + <see cref="MachineZeroOffset"/>.</summary>
+        public double AxisHomeMcsX { get; set; }
+        public double AxisHomeMcsY { get; set; }
+        public double AxisHomeMcsZ { get; set; }
+
+        /// <summary>Физическая позиция нуля MCS (HOME = MCS + смещение профиля по осям).</summary>
+        public (double X, double Y, double Z) GetG28PhysicalPosition() =>
+            (
+                AxisHomeMcsX + MachineZeroOffsetX,
+                AxisHomeMcsY + MachineZeroOffsetY,
+                AxisHomeMcsZ + MachineZeroOffsetZ);
+
+        /// <summary>Устанавливает физические координаты в HOME (ноль MCS).</summary>
+        public void SetPositionToMcsHome()
+        {
+            var (x, y, z) = GetG28PhysicalPosition();
+            SetPosition(x, y, z, A, B, C);
+        }
 
         public MachineState() => Reset();
 
@@ -121,7 +157,7 @@ namespace CNCSS.Data
         /// <summary>Сброс состояния станка к начальным значениям.</summary>
         /// <summary>
         /// Сброс состояния станка к начальным значениям.
-        /// Устанавливает координаты в Home, сбрасывает подачу, обороты и активные модальные группы.
+        /// Устанавливает координаты в ноль MCS, сбрасывает подачу, обороты и активные модальные группы.
         /// </summary>
         public void Reset()
         {
@@ -133,9 +169,10 @@ namespace CNCSS.Data
             CutterCompensation = GCodeRegistry.G40;
             ToolLengthCompensation = GCodeRegistry.G49;
 
-            X = PreviousX = HOME_X;
-            Y = PreviousY = HOME_Y;
-            Z = PreviousZ = HOME_Z;
+            var (homeX, homeY, homeZ) = GetG28PhysicalPosition();
+            X = PreviousX = homeX;
+            Y = PreviousY = homeY;
+            Z = PreviousZ = homeZ;
             A = B = C = 0;
             PreviousA = PreviousB = PreviousC = 0;
 
@@ -148,7 +185,62 @@ namespace CNCSS.Data
             ToolNumber = null;
             ToolLengthOffset = null;
             ToolRadiusOffset = null;
+            IsMachineReferenced = false;
+            MachineZeroOffsetX = 0;
+            MachineZeroOffsetY = 0;
+            MachineZeroOffsetZ = 0;
+            AxisHomeMcsX = 0;
+            AxisHomeMcsY = 0;
+            AxisHomeMcsZ = 0;
             ResetWorkOffsets();
+            ToolLengthGeom.Clear();
+            ToolLengthWear.Clear();
+            ToolRadiusGeom.Clear();
+            ToolRadiusWear.Clear();
+        }
+
+        public void SetMachineZeroFromPhysical(double physicalX, double physicalY, double physicalZ)
+        {
+            MachineZeroOffsetX = physicalX;
+            MachineZeroOffsetY = physicalY;
+            MachineZeroOffsetZ = physicalZ;
+        }
+
+        public void ResetMachineZero()
+        {
+            MachineZeroOffsetX = 0;
+            MachineZeroOffsetY = 0;
+            MachineZeroOffsetZ = 0;
+        }
+
+        public void SetToolLengthOffsetValue(int h, double? geom = null, double? wear = null)
+        {
+            if (h <= 0) return;
+            if (geom.HasValue) ToolLengthGeom[h] = geom.Value;
+            if (wear.HasValue) ToolLengthWear[h] = wear.Value;
+        }
+
+        public void SetToolRadiusOffsetValue(int d, double? geom = null, double? wear = null)
+        {
+            if (d <= 0) return;
+            if (geom.HasValue) ToolRadiusGeom[d] = geom.Value;
+            if (wear.HasValue) ToolRadiusWear[d] = wear.Value;
+        }
+
+        public double GetEffectiveToolLength(int h)
+        {
+            if (h <= 0) return 0;
+            ToolLengthGeom.TryGetValue(h, out double g);
+            ToolLengthWear.TryGetValue(h, out double w);
+            return g + w;
+        }
+
+        public double GetEffectiveToolRadius(int d)
+        {
+            if (d <= 0) return 0;
+            ToolRadiusGeom.TryGetValue(d, out double g);
+            ToolRadiusWear.TryGetValue(d, out double w);
+            return g + w;
         }
 
         /// <summary>
@@ -366,13 +458,25 @@ namespace CNCSS.Data
                 IsCoolantOn = this.IsCoolantOn,
                 ToolNumber = this.ToolNumber,
                 ToolLengthOffset = this.ToolLengthOffset,
-                ToolRadiusOffset = this.ToolRadiusOffset
+                ToolRadiusOffset = this.ToolRadiusOffset,
+                IsMachineReferenced = this.IsMachineReferenced,
+                MachineZeroOffsetX = this.MachineZeroOffsetX,
+                MachineZeroOffsetY = this.MachineZeroOffsetY,
+                MachineZeroOffsetZ = this.MachineZeroOffsetZ,
+                AxisHomeMcsX = this.AxisHomeMcsX,
+                AxisHomeMcsY = this.AxisHomeMcsY,
+                AxisHomeMcsZ = this.AxisHomeMcsZ
             };
 
             foreach (var pair in WorkOffsets)
             {
                 clone.WorkOffsets[pair.Key] = pair.Value.Clone();
             }
+
+            foreach (var pair in ToolLengthGeom) clone.ToolLengthGeom[pair.Key] = pair.Value;
+            foreach (var pair in ToolLengthWear) clone.ToolLengthWear[pair.Key] = pair.Value;
+            foreach (var pair in ToolRadiusGeom) clone.ToolRadiusGeom[pair.Key] = pair.Value;
+            foreach (var pair in ToolRadiusWear) clone.ToolRadiusWear[pair.Key] = pair.Value;
 
             return clone;
         }
