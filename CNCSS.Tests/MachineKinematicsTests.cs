@@ -194,6 +194,40 @@ public sealed class MachineKinematicsTests
     }
 
     [Fact]
+    public void ToolMountOnSpindle_FollowsSpindleZButNotTableXy()
+    {
+        var def = MachineDefinition.CreateDefault();
+        def.ToolMountNodeId = MachineNodeIds.Spindle;
+        def.ToolMount = MachineGeometryPoint.Zero;
+
+        Point3D atHome = ToolMountMcsHelper.ComputeTcpPhysical(def, 0, 0, 0);
+        Point3D movedTableAndSpindle = ToolMountMcsHelper.ComputeTcpPhysical(def, 120, -80, -25);
+        Point3D movedSpindleOnly = ToolMountMcsHelper.ComputeTcpPhysical(def, 0, 0, -25);
+
+        Assert.Equal(atHome.X, movedTableAndSpindle.X, 3);
+        Assert.Equal(atHome.Y, movedTableAndSpindle.Y, 3);
+        Assert.Equal(movedSpindleOnly.X, movedTableAndSpindle.X, 3);
+        Assert.Equal(movedSpindleOnly.Y, movedTableAndSpindle.Y, 3);
+        Assert.Equal(atHome.Z - 25, movedTableAndSpindle.Z, 3);
+    }
+
+    [Fact]
+    public void ToolMountOnTable_FollowsTableXyButNotSpindleZ()
+    {
+        var def = MachineDefinition.CreateDefault();
+        def.ToolMountNodeId = MachineNodeIds.Table;
+        def.ToolMount = MachineGeometryPoint.Zero;
+
+        Point3D atHome = ToolMountMcsHelper.ComputeTcpPhysical(def, 0, 0, 0);
+        Point3D movedTableAndSpindle = ToolMountMcsHelper.ComputeTcpPhysical(def, 120, -80, -25);
+
+        // Стол XY: оси X/Y в кинематике инвертированы относительно физических координат (как контур WCS).
+        Assert.Equal(atHome.X - 120, movedTableAndSpindle.X, 3);
+        Assert.Equal(atHome.Y + 80, movedTableAndSpindle.Y, 3);
+        Assert.Equal(atHome.Z, movedTableAndSpindle.Z, 3);
+    }
+
+    [Fact]
     public void TrySetAttachmentPoint_PreservesMeshOriginInScene()
     {
         var def = MachineDefinition.CreateDefault();

@@ -31,6 +31,10 @@ namespace CNCSS.UI.Hosts
         public Point3D CurrentPosition { get; private set; }
         public double InterpolationProgress { get; private set; }
 
+        public Point3D SegmentStart => _playbackLoopService.SegmentStart;
+
+        public bool IsSegmentInProgress => _playbackLoopService.IsSegmentInProgress;
+
         public void SetCurrentPosition(Point3D position)
         {
             CurrentPosition = position;

@@ -70,9 +70,25 @@ namespace CNCSS.Logic
                 if (cmd.Y.HasValue) parser.State.Y = parser.State.IsAbsolute ? cmd.Y.Value + (wY + mY) : parser.State.Y + cmd.Y.Value;
                 if (cmd.Z.HasValue)
                 {
-                    parser.State.Z = parser.State.IsAbsolute
-                        ? cmd.Z.Value + (wZ + mZ)
-                        : parser.State.Z + cmd.Z.Value;
+                    double newZ = useMachineCoordinatesThisBlock
+                        ? (parser.State.IsAbsolute
+                            ? cmd.Z.Value + (wZ + mZ)
+                            : parser.State.Z + cmd.Z.Value)
+                        : parser.State.ResolveMachineZFromProgramValue(cmd.Z.Value, parser.State.Z);
+                    if (useMachineCoordinatesThisBlock)
+                    {
+                        parser.State.ApplyToolLengthCompensationToMachineZ(ref newZ);
+                    }
+
+                    parser.State.Z = newZ;
+                    if (parser.State.ToolLengthCompensation.Number is 43 or 44)
+                    {
+                        parser.State.IsMachineZSyncedWithLengthComp = true;
+                    }
+                }
+                else if (cmd.GCodes.Any(g => g.Number is 43 or 44))
+                {
+                    parser.State.IsMachineZSyncedWithLengthComp = false;
                 }
                 if (cmd.A.HasValue) parser.State.A = parser.State.IsAbsolute ? cmd.A.Value : parser.State.A + cmd.A.Value;
                 if (cmd.B.HasValue) parser.State.B = parser.State.IsAbsolute ? cmd.B.Value : parser.State.B + cmd.B.Value;

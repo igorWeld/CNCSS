@@ -76,6 +76,21 @@ namespace CNCSS.Logic
             return true;
         }
 
+        /// <summary>Углы дуги в машинной плоскости по концам и центру (после перевода из WCS).</summary>
+        public static (double startAngleRad, double sweepAngleRad) ComputeMachinePlaneAngles(
+            int plane,
+            double startX, double startY, double startZ,
+            double endX, double endY, double endZ,
+            double centerU, double centerV,
+            bool isG2)
+        {
+            GetPlaneCoords(plane, startX, startY, startZ, out double su, out double sv);
+            GetPlaneCoords(plane, endX, endY, endZ, out double eu, out double ev);
+            double startAngle = AngleInPlane(centerU, centerV, su, sv);
+            double sweep = ComputeSweepRad(centerU, centerV, su, sv, eu, ev, isG2);
+            return (startAngle, sweep);
+        }
+
         private static bool HasIjkForPlane(int planeNum, double? i, double? j, double? k)
         {
             return planeNum switch

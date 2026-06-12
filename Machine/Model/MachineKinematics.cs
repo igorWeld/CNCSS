@@ -18,6 +18,20 @@ namespace CNCSS.Machine.Model
     public static class MachineKinematics
     {
         /// <summary>Поза осей X/Y/Z в MCS из физических координат парсера (мм).</summary>
+        /// <summary>
+        /// Схема «XY на столе, Z на шпинделе»: для отображения контура заготовки точки траектории
+        /// нужно строить в СК стола, а не в мировой TCP шпинделя.
+        /// </summary>
+        public static bool UsesTableMountedWorkpiece(MachineDefinition definition)
+        {
+            ArgumentNullException.ThrowIfNull(definition);
+            bool tableXy = definition.Table.MotionAxes.HasFlag(MachineProgramAxisMask.X) ||
+                           definition.Table.MotionAxes.HasFlag(MachineProgramAxisMask.Y);
+            bool spindleXy = definition.Spindle.MotionAxes.HasFlag(MachineProgramAxisMask.X) ||
+                             definition.Spindle.MotionAxes.HasFlag(MachineProgramAxisMask.Y);
+            return tableXy && !spindleXy;
+        }
+
         public static (double X, double Y, double Z) GetAxisPoseMcs(
             MachineDefinition definition,
             double physicalX,

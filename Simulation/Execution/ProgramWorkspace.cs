@@ -30,6 +30,12 @@ namespace CNCSS.Simulation.Execution
             return _current;
         }
 
+        /// <summary>Устанавливает уже разобранную УП (например после фоновой подготовки).</summary>
+        public void ApplyLoadResult(ProgramLoadResult loadResult)
+        {
+            _current = loadResult ?? throw new ArgumentNullException(nameof(loadResult));
+        }
+
         /// <summary>
         /// Rebuilds the current parser using the same loaded lines but with a seeded machine state.
         /// This is used when external WCS (G54..G59) offsets change and we need to recompute EndState

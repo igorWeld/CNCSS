@@ -62,12 +62,17 @@ namespace CNCSS.UI.Presenters
         }
 
         public async Task RefreshStockVisualAsync(
-            IStockVolume stock,
-            ModelVisual3D stockVisual,
+            IStockVolume? stock,
+            ModelVisual3D? stockVisual,
             Border? stockProgressPanel,
             bool showProgress,
             bool stockShownInViewport)
         {
+            if (stock == null || stockVisual == null)
+            {
+                return;
+            }
+
             if (showProgress && stockProgressPanel != null)
             {
                 stockProgressPanel.Visibility = Visibility.Visible;

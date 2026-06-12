@@ -26,8 +26,9 @@ The sample programs `O0001.nc` and `O1204.nc` are copied to the output directory
 4. Try Reset and verify the axes return to home.
 5. Switch to JOG or HANDLE and jog X/Y/Z inside soft limits.
 6. Switch to MDI and execute a simple move such as `G90 G0 X0 Y0 Z10`.
-7. Enable stock display and confirm material removal updates while the program runs.
+7. Open **Симуляция → Заготовка → Конструктор заготовки…**, set shape/size/color, confirm, then press Cycle Start and wait for the voxel stock modal to finish before material removal updates during the run.
 8. Open **Станок → Настройка модели станка**, load STL files for base/table/spindle (optional), set travel limits, save, and confirm the machine assembly appears in the main viewport.
+9. Optional: **Станок → Сохранить текущие настройки как заводские**, change the profile, then **Сбросить заводской профиль** and confirm settings are restored from `Documents\CNCSS\FactoryMachine\`.
 
 ## Development Rules
 
@@ -35,3 +36,4 @@ The sample programs `O0001.nc` and `O1204.nc` are copied to the output directory
 - Keep `MainWindow.xaml.cs` as a WPF composition host; move reusable logic into services.
 - Add or update tests when changing controller modes, interlocks, MDI/JOG behavior, G-code modal interpretation, or material removal contracts.
 - Treat `Vis/VoxelStock.cs` as the runtime stock backend; keep BRep/boolean code experimental until it is explicitly wired into the UI.
+- Stock params come only from the stock constructor; voxel stock is created on Cycle Start only — see `AGENTS.md` for invariants AI assistants must not break.

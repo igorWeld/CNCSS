@@ -16,7 +16,7 @@ namespace CNCSS.Machine.Model
         Center
     }
 
-    /// <summary>Machine-coordinate point for WCS origin from stock bounding box.</summary>
+    /// <summary>Точка нуля WCS в MCS по габаритам заготовки (меню «Симуляция → Ноль WCS…»).</summary>
     public static class StockWorkOrigin
     {
         public static MachineGeometryPoint Compute(

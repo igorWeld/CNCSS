@@ -83,7 +83,9 @@ namespace CNCSS.UI.Dialogs
             ManualY.Text = origin.Y.ToString("0.###", CultureInfo.InvariantCulture);
             ManualZ.Text = origin.Z.ToString("0.###", CultureInfo.InvariantCulture);
 
-            StatusText.Text = $"Рассчитано: X={origin.X:0.###} Y={origin.Y:0.###} Z={origin.Z:0.###}";
+            StatusText.Text =
+                $"Точка на заготовке (СК стола): X={origin.X:0.###} Y={origin.Y:0.###} Z={origin.Z:0.###}. " +
+                "При применении будет переведено в MCS.";
         }
 
         private void Apply_Click(object sender, RoutedEventArgs e)

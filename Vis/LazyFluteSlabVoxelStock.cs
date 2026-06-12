@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Threading;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
 using CNCSS.Data;
@@ -218,13 +219,14 @@ namespace CNCSS.Vis
 
             built.Freeze();
 
-            if (Application.Current?.Dispatcher.CheckAccess() == true)
+            Dispatcher dispatcher = Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher;
+            if (dispatcher.CheckAccess())
             {
                 ApplyBuiltMesh(built);
             }
             else
             {
-                await Application.Current!.Dispatcher.InvokeAsync(() => ApplyBuiltMesh(built));
+                await dispatcher.InvokeAsync(() => ApplyBuiltMesh(built));
             }
 
             _dirtyMesh = false;

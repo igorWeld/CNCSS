@@ -29,6 +29,7 @@ namespace CNCSS.Vis
         private readonly Dictionary<string, MachineAttachmentSphereVisual> _attachmentSpheres =
             new(StringComparer.OrdinalIgnoreCase);
         private bool _attachmentSpheresVisible = true;
+        private bool _machineConstructorOverlaysVisible;
         private bool _wcsPreviewVisible;
         private MachineGeometryPoint _wcsPreviewOffset = MachineGeometryPoint.Zero;
         private readonly Dictionary<Model3D, string> _geometryToNodeId = new();
@@ -49,6 +50,10 @@ namespace CNCSS.Vis
         private double _previewAxisY;
         private double _previewAxisZ;
         private bool _previewPoseEstablished;
+        private ModelVisual3D? _anchoredStockVisual;
+        private ModelVisual3D? _anchoredToolpathVisual;
+        private ModelVisual3D? _anchoredWcsMarkerVisual;
+        private ModelVisual3D? _anchoredToolVisual;
         /// <summary>
         /// В конструкторе станка: MCS в трансформах узлов (kinematic + McsZeroOffset), корень сборки без сдвига.
         /// В симуляции: сдвиг всей сборки через <see cref="SetWorldTransform"/>.
@@ -162,6 +167,23 @@ namespace CNCSS.Vis
             return false;
         }
 
+        public bool TryGetNodeMeshModelClone(string nodeId, out Model3D? model)
+        {
+            model = null;
+            NodeSlot slot = GetSlot(nodeId);
+            Model3D? content = slot.MeshContent;
+            if (content == null)
+            {
+                return false;
+            }
+
+            // Clone keeps transforms, materials and group hierarchy.
+            model = content.Clone();
+            // Apply mesh-local transform used by the live visual.
+            model.Transform = slot.MeshVisual.Transform ?? Transform3D.Identity;
+            return true;
+        }
+
         public void SetBaseVisible(bool visible) => SetNodeMeshVisible(MachineNodeIds.Base, visible);
         public void SetTableVisible(bool visible) => SetNodeMeshVisible(MachineNodeIds.Table, visible);
         public void SetSpindleVisible(bool visible) => SetNodeMeshVisible(MachineNodeIds.Spindle, visible);
@@ -238,12 +260,36 @@ namespace CNCSS.Vis
                 _previewPoseEstablished = false;
             }
 
-            if (_attachmentSpheresVisible)
+            if (_attachmentSpheresVisible && _machineConstructorOverlaysVisible)
             {
                 RefreshAttachmentSpheres(_previewAxisX, _previewAxisY, _previewAxisZ);
             }
 
             _ = RebuildAsync();
+        }
+
+        /// <summary>
+        /// Сферы узлов, MCS, TCP и крепления заготовки — только в конструкторе станка.
+        /// В главном окне симуляции выключено.
+        /// </summary>
+        public void SetMachineConstructorOverlaysVisible(bool visible)
+        {
+            _machineConstructorOverlaysVisible = visible;
+            if (!visible)
+            {
+                SetAttachmentSpheresVisible(false);
+                _workpieceMountOverlayRoot.Children.Clear();
+                _toolMountOverlayRoot.Children.Clear();
+                _wcsPreviewVisible = false;
+                RefreshWcsPreviewOverlay();
+                _gizmoOverlayRoot.Children.Clear();
+                _activeOverlayGizmo = null;
+                return;
+            }
+
+            SetAttachmentSpheresVisible(true);
+            RefreshToolMountMarker();
+            RefreshWorkpieceMountMarker();
         }
 
         public void Detach()
@@ -325,6 +371,165 @@ namespace CNCSS.Vis
             UpdatePose(_previewAxisX, _previewAxisY, _previewAxisZ);
             ApplyAllDisplayModes();
             RefreshGizmos();
+            ReattachTableMountedVisuals();
+        }
+
+        /// <summary>
+        /// Дочерние элементы <c>table.Root</c> (table-local, без собственной кинематики):
+        /// контур УП — всегда; заготовка — при привязке к столу.
+        /// </summary>
+        public void SetTableMountedVisuals(ModelVisual3D? stockVisual, ModelVisual3D? toolpathVisual)
+        {
+            RemoveTableMountedChild(_anchoredStockVisual);
+            RemoveTableMountedChild(_anchoredToolpathVisual);
+            _anchoredStockVisual = stockVisual;
+            _anchoredToolpathVisual = toolpathVisual;
+            AttachTableMountedChild(_anchoredStockVisual);
+            AttachTableMountedChild(_anchoredToolpathVisual);
+        }
+
+        /// <summary>Маркер WCS — дочерний элемент <c>table.Root</c>; позиция в table-local (мм).</summary>
+        public void SetTableMountedWcsMarker(ModelVisual3D? wcsMarkerVisual, Point3D? tableRootLocal = null)
+        {
+            RemoveTableMountedChild(_anchoredWcsMarkerVisual);
+            _anchoredWcsMarkerVisual = wcsMarkerVisual;
+            if (wcsMarkerVisual == null)
+            {
+                return;
+            }
+
+            if (tableRootLocal is Point3D local)
+            {
+                wcsMarkerVisual.Transform = new TranslateTransform3D(local.X, local.Y, local.Z);
+            }
+
+            AttachTableMountedChild(_anchoredWcsMarkerVisual);
+        }
+
+        /// <summary>Повторно привязать маркер WCS к столу без смены table-local transform.</summary>
+        public void EnsureTableMountedWcsMarkerAttached()
+        {
+            if (_anchoredWcsMarkerVisual == null)
+            {
+                return;
+            }
+
+            AttachTableMountedChild(_anchoredWcsMarkerVisual);
+        }
+
+        /// <summary>Инструмент на узле крепления (шпиндель): движется с кинематикой узла.</summary>
+        public void SetMountNodeTool(ModelVisual3D? toolVisual)
+        {
+            RemoveMountNodeChild(_anchoredToolVisual);
+            _anchoredToolVisual = toolVisual;
+            AttachMountNodeChild(_anchoredToolVisual);
+        }
+
+        public bool IsVisualOnToolMountNode(ModelVisual3D visual)
+        {
+            if (visual == null)
+            {
+                return false;
+            }
+
+            string nodeId = string.IsNullOrWhiteSpace(GetDefinition().ToolMountNodeId)
+                ? MachineNodeIds.Spindle
+                : GetDefinition().ToolMountNodeId;
+            return GetSlot(nodeId).Root.Children.Contains(visual);
+        }
+
+        /// <summary>Смещение плоскости TCP в СК <c>mountNode.Root</c> (tool local Z=0 на торце хвостовика).</summary>
+        public Point3D GetToolHolderTranslateInMountNode()
+        {
+            MachineGeometryPoint mount = GetDefinition().ToolMount;
+            return new Point3D(mount.X, mount.Y, mount.Z);
+        }
+
+        private void ReattachTableMountedVisuals()
+        {
+            AttachTableMountedChild(_anchoredStockVisual);
+            AttachTableMountedChild(_anchoredToolpathVisual);
+            AttachTableMountedChild(_anchoredWcsMarkerVisual);
+            ReattachMountNodeTool();
+        }
+
+        private void ReattachMountNodeTool() => AttachMountNodeChild(_anchoredToolVisual);
+
+        private void AttachTableMountedChild(ModelVisual3D? visual)
+        {
+            if (visual == null)
+            {
+                return;
+            }
+
+            DetachVisualFromParent(visual);
+            visual.Transform ??= Transform3D.Identity;
+            if (!_table.Root.Children.Contains(visual))
+            {
+                _table.Root.Children.Add(visual);
+            }
+        }
+
+        /// <summary>Убрать визуал со стола, шпинделя и сборки перед повторным креплением.</summary>
+        public void DetachFromMachineHierarchy(ModelVisual3D visual) => DetachVisualFromParent(visual);
+
+        private void DetachVisualFromParent(ModelVisual3D visual)
+        {
+            RemoveTableMountedChild(visual);
+            RemoveMountNodeChild(visual);
+            if (_assemblyRoot.Children.Contains(visual))
+            {
+                _assemblyRoot.Children.Remove(visual);
+            }
+        }
+
+        private void AttachMountNodeChild(ModelVisual3D? visual)
+        {
+            if (visual == null)
+            {
+                return;
+            }
+
+            string nodeId = string.IsNullOrWhiteSpace(GetDefinition().ToolMountNodeId)
+                ? MachineNodeIds.Spindle
+                : GetDefinition().ToolMountNodeId;
+            DetachVisualFromParent(visual);
+            visual.Transform ??= Transform3D.Identity;
+            ModelVisual3D mountRoot = GetSlot(nodeId).Root;
+            if (!mountRoot.Children.Contains(visual))
+            {
+                mountRoot.Children.Add(visual);
+            }
+        }
+
+        private void RemoveMountNodeChild(ModelVisual3D? visual)
+        {
+            if (visual == null)
+            {
+                return;
+            }
+
+            string nodeId = string.IsNullOrWhiteSpace(GetDefinition().ToolMountNodeId)
+                ? MachineNodeIds.Spindle
+                : GetDefinition().ToolMountNodeId;
+            ModelVisual3D mountRoot = GetSlot(nodeId).Root;
+            if (mountRoot.Children.Contains(visual))
+            {
+                mountRoot.Children.Remove(visual);
+            }
+        }
+
+        private void RemoveTableMountedChild(ModelVisual3D? visual)
+        {
+            if (visual == null)
+            {
+                return;
+            }
+
+            if (_table.Root.Children.Contains(visual))
+            {
+                _table.Root.Children.Remove(visual);
+            }
         }
 
         private void ApplyAllDisplayModes()
@@ -358,10 +563,13 @@ namespace CNCSS.Vis
                 }
             }
 
-            RefreshGizmoOverlay();
-            RefreshToolMountMarker();
-            RefreshWorkpieceMountMarker();
-            RefreshAttachmentSpheres(x, y, z);
+            if (_machineConstructorOverlaysVisible)
+            {
+                RefreshGizmoOverlay();
+                RefreshToolMountMarker();
+                RefreshWorkpieceMountMarker();
+                RefreshAttachmentSpheres(x, y, z);
+            }
         }
 
         private void ApplyKinematicTransform(NodeSlot slot, IReadOnlyDictionary<string, Transform3D> transforms)
@@ -392,6 +600,29 @@ namespace CNCSS.Vis
                 ? MachineNodeIds.Spindle
                 : def.ToolMountNodeId;
             return HasNodeMesh(nodeId) ? GetMeshCenterLocal(nodeId) : null;
+        }
+
+        /// <summary>
+        /// Центр STL в СК узла крепления TCP (с учётом mesh offset/scale/rotation), как для <see cref="ToolMountMcsHelper.ComputeTcpPhysical"/>.
+        /// </summary>
+        public bool TryGetToolMountCenterInNodeFrame(string nodeId, out Point3D centerInNodeFrame)
+        {
+            centerInNodeFrame = default;
+            if (!HasNodeMesh(nodeId))
+            {
+                return false;
+            }
+
+            NodeSlot slot = GetSlot(nodeId);
+            if (slot.MeshContent == null)
+            {
+                return false;
+            }
+
+            Point3D stlCenter = StlModelMetrics.GetCenter(slot.MeshContent);
+            Transform3D meshLocal = slot.MeshVisual.Transform ?? Transform3D.Identity;
+            centerInNodeFrame = meshLocal.Transform(stlCenter);
+            return true;
         }
 
         public bool HasNodeMesh(string nodeId) => HasMesh(nodeId);
@@ -520,6 +751,11 @@ namespace CNCSS.Vis
 
         public void RefreshToolMountMarker()
         {
+            if (!_machineConstructorOverlaysVisible)
+            {
+                return;
+            }
+
             Dispatcher dispatcher = ResolveUiDispatcher();
             if (!dispatcher.CheckAccess())
             {
@@ -564,6 +800,11 @@ namespace CNCSS.Vis
 
         public void RefreshWorkpieceMountMarker()
         {
+            if (!_machineConstructorOverlaysVisible)
+            {
+                return;
+            }
+
             Dispatcher dispatcher = ResolveUiDispatcher();
             if (!dispatcher.CheckAccess())
             {
@@ -750,6 +991,11 @@ namespace CNCSS.Vis
 
         public void RefreshAttachmentSpheres(double physicalX, double physicalY, double physicalZ)
         {
+            if (!_machineConstructorOverlaysVisible)
+            {
+                return;
+            }
+
             Dispatcher dispatcher = ResolveUiDispatcher();
             if (!dispatcher.CheckAccess())
             {

@@ -37,7 +37,7 @@ namespace CNCSS.Machine.Model
             Transform3D baseTransform = Transform3D.Identity;
             result[MachineNodeIds.Base] = baseTransform;
 
-            Vector3D tableMotion = ResolveMotionVector(definition, definition.Table.MotionAxes, x, y, z);
+            Vector3D tableMotion = ResolveTableChainMotion(definition, definition.Table.MotionAxes, x, y, z);
             Matrix3D tableAttach = MachineNodeMeshTransforms.ComposeAttachmentMatrix(
                 definition.Base,
                 definition.Table,
@@ -66,7 +66,7 @@ namespace CNCSS.Machine.Model
 
                 Vector3D motion = extra.MotionLink switch
                 {
-                    MachineMotionLink.Table => ResolveMotionVector(definition, extra.MotionAxes, x, y, z),
+                    MachineMotionLink.Table => ResolveTableChainMotion(definition, extra.MotionAxes, x, y, z),
                     MachineMotionLink.Spindle => ResolveMotionVector(definition, extra.MotionAxes, x, y, z),
                     _ => new Vector3D(0, 0, 0)
                 };
@@ -84,7 +84,7 @@ namespace CNCSS.Machine.Model
             return result;
         }
 
-        /// <summary>Tool tip (TCP) in MCS; optional stick-out below holder along -Z.</summary>
+        /// <summary>Режущая вершина (TCP УП) в MCS: плоскость крепления минус вылет вдоль -Z.</summary>
         public static Point3D ComputeToolCenterPoint(
             MachineDefinition definition,
             double physicalX,
@@ -92,53 +92,21 @@ namespace CNCSS.Machine.Model
             double physicalZ,
             double stickOutMm = 50)
         {
-            Point3D tcp = ToolMountMcsHelper.ComputeTcpPhysical(definition, physicalX, physicalY, physicalZ);
+            Point3D holderPlane = ToolMountMcsHelper.ComputeTcpPhysical(definition, physicalX, physicalY, physicalZ);
             if (stickOutMm <= 1e-9)
             {
-                return tcp;
+                return holderPlane;
             }
 
-            Point3D holder = new(tcp.X, tcp.Y, tcp.Z + stickOutMm);
-            return ToolHolderKinematics.ComputeToolTipFromHolder(holder, stickOutMm);
+            return ToolHolderKinematics.ComputeToolTipFromHolder(holderPlane, stickOutMm);
         }
 
         /// <summary>World point where workpiece bottom sits (after optional fixture height).</summary>
         public static Point3D ComputeWorkpieceMountPoint(
             MachineDefinition definition,
             IReadOnlyDictionary<string, Transform3D> transforms,
-            Rect3D? tableMeshBoundsLocal = null)
-        {
-            MachineGeometryPoint mountLocal = WorkpieceMountHelper.ResolveMountLocal(
-                definition.WorkpieceMount,
-                tableMeshBoundsLocal);
-
-            if (!transforms.TryGetValue(MachineNodeIds.Table, out Transform3D? kinematic))
-            {
-                kinematic = Transform3D.Identity;
-            }
-
-            Transform3D meshLocal = BuildMeshTransformForNode(definition, MachineNodeIds.Table);
-            Point3D inNode = MachineNodeMeshTransforms.TransformPoint(
-                meshLocal,
-                new Point3D(mountLocal.X, mountLocal.Y, mountLocal.Z));
-            Point3D onTable = MachineNodeMeshTransforms.TransformPoint(kinematic, inNode);
-            return new Point3D(onTable.X, onTable.Y, onTable.Z + definition.FixtureHeightMm);
-        }
-
-        private static Transform3D BuildMeshTransformForNode(MachineDefinition definition, string nodeId)
-        {
-            if (definition.TryGetBuiltInNode(nodeId) is MachineNodeDefinition builtIn)
-            {
-                return MachineNodeMeshTransforms.BuildMeshLocalTransform(builtIn);
-            }
-
-            if (definition.TryGetExtraNode(nodeId) is MachineExtraNodeDefinition extra)
-            {
-                return MachineNodeMeshTransforms.BuildMeshLocalTransform(extra);
-            }
-
-            return MachineNodeMeshTransforms.BuildMeshLocalTransform(definition.Spindle);
-        }
+            Rect3D? tableMeshBoundsLocal = null) =>
+            WorkpieceMountPlacement.ComputeMountWorldWithFixture(definition, transforms, tableMeshBoundsLocal);
 
         private static MachineNodeDefinition ResolveParentDefinition(MachineDefinition definition, string parentNodeId)
         {
@@ -182,6 +150,28 @@ namespace CNCSS.Machine.Model
                 mask.HasFlag(MachineProgramAxisMask.X) ? mcsX - definition.GetAxisHomeMcs("X") : 0,
                 mask.HasFlag(MachineProgramAxisMask.Y) ? mcsY - definition.GetAxisHomeMcs("Y") : 0,
                 mask.HasFlag(MachineProgramAxisMask.Z) ? mcsZ - definition.GetAxisHomeMcs("Z") : 0);
+        }
+
+        /// <summary>
+        /// Стол XY: оси X/Y в кинематике противоположны направлению координат X/Y в УП/WCS на столе.
+        /// </summary>
+        private static Vector3D ResolveTableChainMotion(
+            MachineDefinition definition,
+            MachineProgramAxisMask mask,
+            double x,
+            double y,
+            double z)
+        {
+            Vector3D motion = ResolveMotionVector(definition, mask, x, y, z);
+            if (!MachineKinematics.UsesTableMountedWorkpiece(definition))
+            {
+                return motion;
+            }
+
+            return new Vector3D(
+                mask.HasFlag(MachineProgramAxisMask.X) ? -motion.X : motion.X,
+                mask.HasFlag(MachineProgramAxisMask.Y) ? -motion.Y : motion.Y,
+                motion.Z);
         }
 
         private static Matrix3D GetMatrix(Transform3D transform) =>

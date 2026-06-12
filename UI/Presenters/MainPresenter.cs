@@ -2,8 +2,8 @@ using System.IO;
 using System.Windows.Media.Media3D;
 using CNCSS.Data;
 using CNCSS.Logic.ProgramLoading;
+using CNCSS.Machine.Model;
 using CNCSS.Simulation.Execution;
-using CNCSS.Vis;
 using CNCSS.UI.Views;
 
 namespace CNCSS.UI.Presenters
@@ -28,14 +28,21 @@ namespace CNCSS.UI.Presenters
             _cycleCoordinator = cycleCoordinator ?? throw new ArgumentNullException(nameof(cycleCoordinator));
         }
 
-        public ToolpathSceneBuildResult LoadProgram(string filePath)
+        public ProgramLoadOrchestrator ProgramLoadOrchestrator => _programLoadOrchestrator;
+
+        public PreparedProgramLoad LoadProgram(
+            string filePath,
+            MachineState seedState,
+            MachineDefinition profile,
+            double toolStickOutMm)
         {
             try
             {
-                var result = _programLoadOrchestrator.Load(filePath);
-                _view.BindProgram(result.LoadResult);
-                _view.SetStatus($"Program loaded: {Path.GetFileName(result.LoadResult.FullPath)}");
-                return result;
+                PreparedProgramLoad prepared = _programLoadOrchestrator.Load(filePath, seedState, profile, toolStickOutMm);
+                _view.BindProgram(prepared.LoadResult);
+                _view.ApplyPreparedProgram(prepared);
+                _view.SetStatus($"Program loaded: {Path.GetFileName(prepared.LoadResult.FullPath)}");
+                return prepared;
             }
             catch (Exception ex)
             {

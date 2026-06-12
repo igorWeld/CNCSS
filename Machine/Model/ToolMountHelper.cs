@@ -40,9 +40,14 @@ namespace CNCSS.Machine.Model
 
 
 
-        public static MachineGeometryPoint CenterXY(MachineGeometryPoint current) =>
-
-            new() { X = 0, Y = 0, Z = current.Z };
+        /// <summary>Центр модели в СК узла крепления; Z сохраняется.</summary>
+        public static MachineGeometryPoint CenterXY(Point3D centerInNodeFrame, MachineGeometryPoint current) =>
+            new()
+            {
+                X = centerInNodeFrame.X,
+                Y = centerInNodeFrame.Y,
+                Z = current.Z
+            };
 
 
 

@@ -27,8 +27,11 @@ namespace CNCSS.Machine.Model
         /// <summary>Node that carries the tool holder (collet) point.</summary>
         public string ToolMountNodeId { get; set; } = MachineNodeIds.Spindle;
 
-        /// <summary>TCP (мм) в MCS; при HOME осей = 0 совпадает с нулём MCS.</summary>
+        /// <summary>TCP (мм) в локальной СК узла <see cref="ToolMountNodeId"/>.</summary>
         public MachineGeometryPoint ToolMount { get; set; } = new();
+
+        /// <summary>True when <see cref="ToolMount"/> is stored in the local coordinate system of <see cref="ToolMountNodeId"/>.</summary>
+        public bool ToolMountIsNodeLocal { get; set; }
 
         /// <summary>Default stick-out from holder to tip when no tool is selected (mm).</summary>
         public double DefaultToolStickOutMm { get; set; } = 50;
@@ -77,8 +80,7 @@ namespace CNCSS.Machine.Model
                 ShiftMcsFrameAttachment(extra.AttachOnParent, dx, dy, dz);
             }
 
-            ShiftMcsFrameAttachment(ToolMount, dx, dy, dz);
-            ShiftMcsFrameAttachment(WorkpieceMount, dx, dy, dz);
+            ShiftNodeLocalToolMountInScene(dx, dy, dz);
 
             var g54 = DefaultWorkOffsetG54 ?? MachineGeometryPoint.Zero;
             g54.X += dx;
@@ -260,8 +262,8 @@ namespace CNCSS.Machine.Model
                 ShiftMcsFrameAttachment(extra.AttachOnParent, shiftX, shiftY, shiftZ);
             }
 
-            ShiftMcsFrameAttachment(ToolMount, shiftX, shiftY, shiftZ);
-            ShiftMcsFrameAttachment(WorkpieceMount, shiftX, shiftY, shiftZ);
+            ShiftNodeLocalToolMountInMcs(shiftX, shiftY, shiftZ);
+            // WorkpieceMount — mesh-local стола; не переносим при смене нуля MCS.
 
             var g54 = DefaultWorkOffsetG54 ?? MachineGeometryPoint.Zero;
             g54.X += shiftX;
@@ -279,6 +281,23 @@ namespace CNCSS.Machine.Model
             attach.X += shiftX;
             attach.Y += shiftY;
             attach.Z += shiftZ;
+        }
+
+        /// <summary>Legacy TCP в MCS сдвигается вместе с нулём MCS; node-local TCP не трогаем.</summary>
+        private void ShiftNodeLocalToolMountInMcs(double shiftX, double shiftY, double shiftZ)
+        {
+            if (!ToolMountIsNodeLocal)
+            {
+                ShiftMcsFrameAttachment(ToolMount, shiftX, shiftY, shiftZ);
+            }
+        }
+
+        private void ShiftNodeLocalToolMountInScene(double dx, double dy, double dz)
+        {
+            if (!ToolMountIsNodeLocal)
+            {
+                ShiftMcsFrameAttachment(ToolMount, dx, dy, dz);
+            }
         }
 
         /// <summary>Запомнить HOME: положение HOME в MCS из точки сцены (центр сферы HOME).</summary>
@@ -458,8 +477,41 @@ namespace CNCSS.Machine.Model
             NormalizeLegacyAxisHomeInMcs();
             NormalizeDuplicateMcsAxisHome();
             ToolMountMcsHelper.NormalizeLegacyMeshOffsetToolMount(this);
+            MigrateLegacyToolMountMcsToNodeLocal();
             MachineNodeColors.ApplyDefaultBuiltInMeshColors(this);
             SyncHomePositionFromAxes();
+        }
+
+        private void MigrateLegacyToolMountMcsToNodeLocal()
+        {
+            if (ToolMountIsNodeLocal)
+            {
+                return;
+            }
+
+            MachineGeometryPoint physicalHome = GetPhysicalHomePosition();
+            Transform3D nodeTransform = ToolMountMcsHelper.ResolveToolMountNodeTransform(
+                this,
+                physicalHome.X,
+                physicalHome.Y,
+                physicalHome.Z);
+            Matrix3D node = nodeTransform.Value;
+            if (!node.HasInverse)
+            {
+                ToolMountIsNodeLocal = true;
+                return;
+            }
+
+            node.Invert();
+            Point3D legacyMcsTcp = new(ToolMount.X, ToolMount.Y, ToolMount.Z);
+            Point3D localTcp = node.Transform(legacyMcsTcp);
+            ToolMount = new MachineGeometryPoint
+            {
+                X = localTcp.X,
+                Y = localTcp.Y,
+                Z = localTcp.Z
+            };
+            ToolMountIsNodeLocal = true;
         }
 
         /// <summary>
@@ -576,6 +628,7 @@ namespace CNCSS.Machine.Model
                 DisplayName = displayName,
                 HomePosition = MachineGeometryPoint.Zero,
                 McsZeroOffset = MachineGeometryPoint.Zero,
+                ToolMountIsNodeLocal = true,
                 Base = MachineNodeDefinition.CreateDefault(MachineNodeKind.Base),
                 Table = MachineNodeDefinition.CreateDefault(MachineNodeKind.Table),
                 Spindle = MachineNodeDefinition.CreateDefault(MachineNodeKind.Spindle),
@@ -609,6 +662,7 @@ namespace CNCSS.Machine.Model
                 Axes = Axes.Select(a => a.Clone()).ToList(),
                 ToolMountNodeId = ToolMountNodeId,
                 ToolMount = ToolMount.Clone(),
+                ToolMountIsNodeLocal = ToolMountIsNodeLocal,
                 DefaultToolStickOutMm = DefaultToolStickOutMm,
                 WorkpieceMount = WorkpieceMount.Clone(),
                 FixtureHeightMm = FixtureHeightMm,

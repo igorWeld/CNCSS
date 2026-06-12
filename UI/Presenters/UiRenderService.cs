@@ -44,13 +44,14 @@ namespace CNCSS.UI.Presenters
         public ToolViewModel? SyncToolVisual(
             int? toolNumber,
             ObservableCollection<ToolViewModel> tools,
-            ListBox toolsList,
+            Action<ToolViewModel?> selectTool,
             HelixViewport3D viewport,
             ModelVisual3D toolVisual,
             Point3D position,
             Action<ToolViewModel, Point3D> updateToolGeometry,
             Action<ToolViewModel> onToolCreated,
-            bool allowHideWhenNoTool)
+            bool allowHideWhenNoTool,
+            bool skipViewportAttach = false)
         {
             if (toolNumber.HasValue)
             {
@@ -63,12 +64,9 @@ namespace CNCSS.UI.Presenters
                     tools.Add(toolVm);
                 }
 
-                if (toolsList.SelectedItem != toolVm)
-                {
-                    toolsList.SelectedItem = toolVm;
-                }
+                selectTool(toolVm);
 
-                if (!viewport.Children.Contains(toolVisual))
+                if (!skipViewportAttach && !viewport.Children.Contains(toolVisual))
                 {
                     viewport.Children.Add(toolVisual);
                 }

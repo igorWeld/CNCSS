@@ -36,6 +36,10 @@ namespace CNCSS.Simulation.Execution
 
         public bool IsSegmentInProgress => _progress < 1.0;
 
+        public Point3D SegmentStart => _start;
+
+        public double SegmentProgress => _progress;
+
         public PlaybackLoopService(ProgramExecutionService programExecutionService)
         {
             _programExecutionService = programExecutionService;

@@ -2,12 +2,13 @@ using System.Windows.Media.Media3D;
 
 namespace CNCSS.Machine.Model
 {
-    /// <summary>Aligns a stock box to a table mounting point.</summary>
+    /// <summary>Выравнивание габаритов заготовки относительно точки крепления на столе.</summary>
     public static class WorkpiecePlacement
     {
+        /// <summary>Ограничивающий параллелепипед заготовки (table-local или MCS).</summary>
         public readonly record struct StockBounds(double MinX, double MaxX, double MinY, double MaxY, double MinZ, double MaxZ);
 
-        /// <summary>Stock box in table mesh-local coords; bottom on mounting plane.</summary>
+        /// <summary>Габариты в координатах меша стола; нижняя грань на плоскости крепления.</summary>
         public static StockBounds AlignToMountTableLocal(
             MachineGeometryPoint mountLocal,
             double width,
@@ -59,9 +60,7 @@ namespace CNCSS.Machine.Model
             return new StockBounds(minX, maxX, minY, maxY, minZ, maxZ);
         }
 
-        /// <summary>
-        /// Centers stock in XY on the mount point; bottom face at mount Z + fixture height.
-        /// </summary>
+        /// <summary>Центрирует заготовку по XY на точке крепления; низ на mount Z + высота приспособления.</summary>
         public static StockBounds AlignToMount(StockBounds stock, double mountWorldX, double mountWorldY, double mountWorldZ, double fixtureHeightMm)
         {
             double width = stock.MaxX - stock.MinX;

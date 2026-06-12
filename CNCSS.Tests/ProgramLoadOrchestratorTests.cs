@@ -1,10 +1,11 @@
 using System.Windows.Media.Media3D;
+using CNCSS.Data;
 using CNCSS.Logic;
 using CNCSS.Machine.Core;
+using CNCSS.Machine.Model;
 using CNCSS.Simulation.Bus;
 using CNCSS.Simulation.Execution;
 using CNCSS.UI.Hosts;
-using CNCSS.Vis;
 
 namespace CNCSS.Tests;
 
@@ -30,15 +31,15 @@ public sealed class ProgramLoadOrchestratorTests
             var orchestrator = new ProgramLoadOrchestrator(
                 new ProgramWorkspace(new ProgramLoader(), new ProgramStateService()),
                 execution,
-                playbackHost,
-                new ToolpathSceneBuilder());
+                playbackHost);
 
-            ToolpathSceneBuildResult scene = orchestrator.Load(path);
+            var seed = new MachineState();
+            var profile = new MachineDefinition();
+            PreparedProgramLoad prepared = orchestrator.Load(path, seed, profile, toolStickOutMm: 0);
 
-            Assert.Equal(2, scene.LoadResult.Parser.Commands.Count);
-            Assert.NotEmpty(scene.SegmentsWithLines);
-            Assert.NotNull(scene.Bounds);
-            Assert.Contains("Сегментов пути", scene.StatsText);
+            Assert.Equal(2, prepared.LoadResult.Parser.Commands.Count);
+            Assert.NotEmpty(prepared.SegmentsWithLines);
+            Assert.Contains("Сегментов пути", prepared.StatsText);
             Assert.Equal(new Point3D(0, 0, 0), playbackHost.CurrentPosition);
         }
         finally

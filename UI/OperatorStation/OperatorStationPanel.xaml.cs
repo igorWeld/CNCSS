@@ -28,6 +28,7 @@ namespace CNCSS.UI.OperatorStation
         public event EventHandler<double>? SpindleOverridePercentChanged;
         public event EventHandler<bool>? SingleBlockChanged;
         public event EventHandler<bool>? OptionalStopChanged;
+        public event EventHandler<string>? MdiCommandRequested;
 
         public OperatorStationPanel()
         {
@@ -247,11 +248,11 @@ namespace CNCSS.UI.OperatorStation
 
         private void EStop_Click(object sender, RoutedEventArgs e) => EmergencyResetRequested?.Invoke(this, EventArgs.Empty);
 
-        private void SpinCw_Click(object sender, RoutedEventArgs e) { }
+        private void SpinCw_Click(object sender, RoutedEventArgs e) => MdiCommandRequested?.Invoke(this, "M3");
 
-        private void SpinStop_Click(object sender, RoutedEventArgs e) { }
+        private void SpinStop_Click(object sender, RoutedEventArgs e) => MdiCommandRequested?.Invoke(this, "M5");
 
-        private void SpinCcw_Click(object sender, RoutedEventArgs e) { }
+        private void SpinCcw_Click(object sender, RoutedEventArgs e) => MdiCommandRequested?.Invoke(this, "M4");
 
         private void WorkOv_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {

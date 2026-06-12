@@ -112,6 +112,7 @@ namespace CNCSS.UI.Dialogs
         private async void OnLoaded(object sender, RoutedEventArgs e)
         {
             _previewCoordinator.Attach(PreviewViewport);
+            _previewCoordinator.SetMachineConstructorOverlaysVisible(true);
             _previewCoordinator.SetBakeSceneMcsIntoNodeTransforms(true);
             HookPreviewUpdates();
             await _viewModel.RefreshMissingStlMetricsAsync(_stlMeshLoader);
@@ -509,7 +510,21 @@ namespace CNCSS.UI.Dialogs
                 return;
             }
 
-            _viewModel.CenterToolMountXY();
+            string nodeId = string.IsNullOrWhiteSpace(_viewModel.ToolMountNodeId)
+                ? MachineNodeIds.Spindle
+                : _viewModel.ToolMountNodeId;
+            if (!_previewCoordinator.TryGetToolMountCenterInNodeFrame(nodeId, out Point3D center))
+            {
+                MessageBox.Show(this, "Нет STL у выбранного узла крепления TCP.", "TCP", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (!_viewModel.TryCenterToolMountXY(center))
+            {
+                MessageBox.Show(this, "Не удалось вычислить центр модели.", "TCP", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
             RefreshPreview();
         }
 

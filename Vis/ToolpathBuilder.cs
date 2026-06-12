@@ -37,7 +37,7 @@ namespace CNCSS.Vis
             MachineDefinition? machine = null,
             double toolStickOutMm = 0)
         {
-            var projection = new ToolpathPointProjection(machine, toolStickOutMm);
+            var projection = new ToolpathPointProjection(machine, initialState, toolStickOutMm);
             var list = new List<ToolpathSegmentWithLine>();
             var cmds = parser.Commands;
             var tempParser = initialState != null
@@ -46,9 +46,10 @@ namespace CNCSS.Vis
 
             foreach (var cmd in cmds)
             {
-                double x0 = tempParser.State.X;
-                double y0 = tempParser.State.Y;
-                double z0 = tempParser.State.Z;
+                MachineState state0 = tempParser.State.Clone();
+                double x0 = state0.X;
+                double y0 = state0.Y;
+                double z0 = state0.Z;
 
                 CommandReplayer.ReplayCommand(tempParser, cmd);
 
@@ -67,7 +68,9 @@ namespace CNCSS.Vis
                             {
                                 Kind = ToolpathSegmentKind.Rapid,
                                 Points = projection.Map(
+                                    state0,
                                     new Point3D(x0, y0, z0),
+                                    tempParser.State,
                                     new Point3D(x0, y0, z1))
                             },
                             LineNumber = cmd.LineNumber
@@ -82,7 +85,9 @@ namespace CNCSS.Vis
                             {
                                 Kind = ToolpathSegmentKind.Rapid,
                                 Points = projection.Map(
+                                    state0,
                                     new Point3D(x0, y0, z1),
+                                    tempParser.State,
                                     new Point3D(x1, y1, z1))
                             },
                             LineNumber = cmd.LineNumber
@@ -101,7 +106,7 @@ namespace CNCSS.Vis
                         seg = new ToolpathSegment
                         {
                             Kind = ToolpathSegmentKind.Arc,
-                            Points = projection.Map(SampleArc(arc))
+                            Points = projection.Map(tempParser.State, SampleArc(arc))
                         };
                     }
                     else
@@ -114,7 +119,9 @@ namespace CNCSS.Vis
                         {
                             Kind = kind,
                             Points = projection.Map(
+                                state0,
                                 new Point3D(x0, y0, z0),
+                                tempParser.State,
                                 new Point3D(x1, y1, z1))
                         };
                     }
@@ -136,7 +143,7 @@ namespace CNCSS.Vis
             MachineDefinition? machine = null,
             double toolStickOutMm = 0)
         {
-            var projection = new ToolpathPointProjection(machine, toolStickOutMm);
+            var projection = new ToolpathPointProjection(machine, initialState, toolStickOutMm);
             var list = new List<ToolpathSegment>();
             var cmds = commands.ToList();
             var parser = initialState != null
@@ -145,9 +152,10 @@ namespace CNCSS.Vis
 
             foreach (var cmd in cmds)
             {
-                double x0 = parser.State.X;
-                double y0 = parser.State.Y;
-                double z0 = parser.State.Z;
+                MachineState state0 = parser.State.Clone();
+                double x0 = state0.X;
+                double y0 = state0.Y;
+                double z0 = state0.Z;
 
                 CommandReplayer.ReplayCommand(parser, cmd);
 
@@ -163,7 +171,9 @@ namespace CNCSS.Vis
                         {
                             Kind = ToolpathSegmentKind.Rapid,
                             Points = projection.Map(
+                                state0,
                                 new Point3D(x0, y0, z0),
+                                parser.State,
                                 new Point3D(x0, y0, z1))
                         });
                     }
@@ -174,7 +184,9 @@ namespace CNCSS.Vis
                         {
                             Kind = ToolpathSegmentKind.Rapid,
                             Points = projection.Map(
+                                state0,
                                 new Point3D(x0, y0, z1),
+                                parser.State,
                                 new Point3D(x1, y1, z1))
                         });
                     }
@@ -187,7 +199,7 @@ namespace CNCSS.Vis
                     var arc = TryRecomputeArc(parser, cmd, x0, y0, z0, x1, y1, z1);
                     if (arc != null)
                     {
-                        var pts = projection.Map(SampleArc(arc));
+                        var pts = projection.Map(parser.State, SampleArc(arc));
                         if (pts.Length >= 2)
                         {
                             list.Add(new ToolpathSegment { Kind = ToolpathSegmentKind.Arc, Points = pts });
@@ -203,7 +215,9 @@ namespace CNCSS.Vis
                     {
                         Kind = kind,
                         Points = projection.Map(
+                            state0,
                             new Point3D(x0, y0, z0),
+                            parser.State,
                             new Point3D(x1, y1, z1))
                     });
                 }
@@ -215,15 +229,17 @@ namespace CNCSS.Vis
         private readonly struct ToolpathPointProjection
         {
             private readonly MachineDefinition? _machine;
-            private readonly double _toolStickOutMm;
+            private readonly bool _tableLocalPath;
 
-            public ToolpathPointProjection(MachineDefinition? machine, double toolStickOutMm)
+            public ToolpathPointProjection(MachineDefinition? machine, MachineState? initialState, double toolStickOutMm)
             {
+                _ = initialState;
+                _ = toolStickOutMm;
                 _machine = machine;
-                _toolStickOutMm = toolStickOutMm;
+                _tableLocalPath = machine != null && MachineKinematics.UsesTableMountedWorkpiece(machine);
             }
 
-            public Point3D[] Map(params Point3D[] axisPhysicalPoints)
+            public Point3D[] Map(MachineState state, params Point3D[] axisPhysicalPoints)
             {
                 if (_machine == null)
                 {
@@ -234,15 +250,61 @@ namespace CNCSS.Vis
                 for (int i = 0; i < axisPhysicalPoints.Length; i++)
                 {
                     Point3D p = axisPhysicalPoints[i];
-                    mapped[i] = KinematicChainSolver.ComputeToolCenterPoint(
-                        _machine,
-                        p.X,
-                        p.Y,
-                        p.Z,
-                        _toolStickOutMm);
+                    mapped[i] = _tableLocalPath
+                        ? ToTableLocalProgramPoint(_machine, state, p.X, p.Y, p.Z)
+                        : ToSceneProgramPoint(_machine, state, p.X, p.Y, p.Z);
                 }
 
                 return mapped;
+            }
+
+            public Point3D[] Map(
+                MachineState state0,
+                Point3D physical0,
+                MachineState state1,
+                Point3D physical1) =>
+                new[]
+                {
+                    MapPoint(state0, physical0),
+                    MapPoint(state1, physical1)
+                };
+
+            private Point3D MapPoint(MachineState state, Point3D physical) =>
+                _machine == null
+                    ? physical
+                    : _tableLocalPath
+                        ? ToTableLocalProgramPoint(_machine, state, physical.X, physical.Y, physical.Z)
+                        : ToSceneProgramPoint(_machine, state, physical.X, physical.Y, physical.Z);
+
+            private Point3D ToTableLocalProgramPoint(
+                MachineDefinition definition,
+                MachineState state,
+                double physicalX,
+                double physicalY,
+                double physicalZ) =>
+                WorkpieceMountPlacement.PhysicalProgramToTableLocal(
+                    definition,
+                    state,
+                    physicalX,
+                    physicalY,
+                    physicalZ);
+
+            private static Point3D ToSceneProgramPoint(
+                MachineDefinition definition,
+                MachineState state,
+                double physicalX,
+                double physicalY,
+                double physicalZ)
+            {
+                state.MachineAxisToWorkpieceTip(physicalX, physicalY, physicalZ, out double programX, out double programY, out double programZ);
+                MachineState.WorkOffset wcs = state.GetActiveWorkOffset();
+                Point3D wcsScene = MachineAttachmentService.GetWcsOriginScene(
+                    definition,
+                    new MachineGeometryPoint { X = wcs.X, Y = wcs.Y, Z = wcs.Z });
+                return new Point3D(
+                    wcsScene.X + programX,
+                    wcsScene.Y + programY,
+                    wcsScene.Z + programZ);
             }
         }
 
@@ -265,9 +327,11 @@ namespace CNCSS.Vis
                 return null;
             }
 
-            return ArcCalculator.TryComputeArc(
+            return ArcMotionPlanner.TryComputeMachineArc(
+                parser.State,
                 x0, y0, z0,
                 x1, y1, z1,
+                cmd.X, cmd.Y, cmd.Z,
                 parser.State.CurrentPlane,
                 parser.State.CurrentMotionMode.Number == 2,
                 cmd.I, cmd.J, cmd.K, cmd.R,

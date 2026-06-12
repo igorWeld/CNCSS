@@ -206,6 +206,28 @@ public sealed class MachineDefinitionTests
     }
 
     [Fact]
+    public void NormalizeAfterLoad_ConvertsLegacyToolMountMcsToNodeLocal()
+    {
+        var def = MachineDefinition.CreateDefault();
+        def.ToolMountNodeId = MachineNodeIds.Spindle;
+        def.ToolMount = MachineGeometryPoint.Zero;
+        def.ToolMountIsNodeLocal = false;
+        MachineGeometryPoint physicalHome = def.GetPhysicalHomePosition();
+
+        def.NormalizeAfterLoad();
+
+        Assert.True(def.ToolMountIsNodeLocal);
+        Point3D tcp = ToolMountMcsHelper.ComputeTcpPhysical(
+            def,
+            physicalHome.X,
+            physicalHome.Y,
+            physicalHome.Z);
+        Assert.Equal(0, tcp.X, 3);
+        Assert.Equal(0, tcp.Y, 3);
+        Assert.Equal(0, tcp.Z, 3);
+    }
+
+    [Fact]
     public void CommitMcsZeroAtPose_SetsHomeToMcsAndZerosAxisPose()
     {
         var def = MachineDefinition.CreateDefault();

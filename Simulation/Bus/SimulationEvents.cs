@@ -53,4 +53,7 @@ namespace CNCSS.Simulation.Bus
     public sealed record WorkOffsetsChangedEvent(
         IReadOnlyList<WorkOffsetSnapshot> Offsets,
         DateTime TimestampUtc) : SimulationEvent(TimestampUtc);
+
+    /// <summary>Изменились корректоры длины/радиуса инструмента (OFFSET H/D).</summary>
+    public sealed record ToolOffsetsChangedEvent(DateTime TimestampUtc) : SimulationEvent(TimestampUtc);
 }

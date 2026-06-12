@@ -5,7 +5,7 @@ namespace CNCSS.Machine.Model
     /// <summary>Spindle holder point vs tool tip (TCP) along machine Z.</summary>
     public static class ToolHolderKinematics
     {
-        /// <summary>Collet / holder point: TCP in MCS + optional stick-out along +Z.</summary>
+        /// <summary>Плоскость крепления (TCP / торец хвостовика) в MCS.</summary>
         public static Point3D ComputeToolHolderPoint(
             MachineDefinition definition,
             double physicalX,
@@ -13,15 +13,13 @@ namespace CNCSS.Machine.Model
             double physicalZ,
             double stickOutMm = 0)
         {
-            Point3D tcp = ToolMountMcsHelper.ComputeTcpPhysical(definition, physicalX, physicalY, physicalZ);
-            return stickOutMm > 1e-9
-                ? new Point3D(tcp.X, tcp.Y, tcp.Z + stickOutMm)
-                : tcp;
+            _ = stickOutMm;
+            return ToolMountMcsHelper.ComputeTcpPhysical(definition, physicalX, physicalY, physicalZ);
         }
 
-        /// <summary>TCP below holder along -Z (vertical spindle).</summary>
-        public static Point3D ComputeToolTipFromHolder(Point3D holderWorld, double stickOutMm) =>
-            new(holderWorld.X, holderWorld.Y, holderWorld.Z - Math.Max(0, stickOutMm));
+        /// <summary>Режущий конец ниже плоскости крепления вдоль -Z (вертикальный шпиндель).</summary>
+        public static Point3D ComputeToolTipFromHolder(Point3D holderPlaneMcs, double stickOutMm) =>
+            new(holderPlaneMcs.X, holderPlaneMcs.Y, holderPlaneMcs.Z - Math.Max(0, stickOutMm));
 
         private static Transform3D BuildMeshTransformForNode(MachineDefinition definition, string nodeId)
         {

@@ -1,3 +1,4 @@
+using System.Windows.Media;
 using System.Windows.Media.Media3D;
 using HelixToolkit.Wpf;
 
@@ -20,7 +21,7 @@ namespace CNCSS.UI.Presenters
 
         public void UpdateVisibilityByLine(
             Dictionary<int, List<Visual3D>> lineVisualsMap,
-            HelixViewport3D viewport,
+            ModelVisual3D container,
             int selectedLine)
         {
             foreach (var entry in lineVisualsMap)
@@ -31,23 +32,62 @@ namespace CNCSS.UI.Presenters
                     bool isAlreadyVisible = _visibleVisuals.Contains(visual);
                     if (isVisible && !isAlreadyVisible)
                     {
-                        // Visual3D cannot be added twice; it might already be in the viewport
+                        // Visual3D cannot be added twice; it might already be in the container
                         // (e.g. after rebuild) while our visible set was Reset().
-                        if (!viewport.Children.Contains(visual))
+                        if (!container.Children.Contains(visual))
                         {
-                            viewport.Children.Add(visual);
+                            container.Children.Add(visual);
                         }
+
                         _visibleVisuals.Add(visual);
                     }
                     else if (!isVisible && isAlreadyVisible)
                     {
-                        if (viewport.Children.Contains(visual))
+                        if (container.Children.Contains(visual))
                         {
-                            viewport.Children.Remove(visual);
+                            container.Children.Remove(visual);
                         }
+
                         _visibleVisuals.Remove(visual);
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// Во время воспроизведения: завершённые строки + «хвост» текущего сегмента до положения инструмента.
+        /// </summary>
+        public void UpdatePlaybackProgress(
+            Dictionary<int, List<Visual3D>> lineVisualsMap,
+            ModelVisual3D container,
+            int visibleThroughLine,
+            LinesVisual3D? capVisual,
+            bool showCap,
+            Point3D capFrom,
+            Point3D capTo,
+            Color capColor)
+        {
+            UpdateVisibilityByLine(lineVisualsMap, container, visibleThroughLine);
+            if (capVisual == null)
+            {
+                return;
+            }
+
+            if (showCap)
+            {
+                capVisual.Color = capColor;
+                capVisual.Points = new Point3DCollection { capFrom, capTo };
+                if (!container.Children.Contains(capVisual))
+                {
+                    container.Children.Add(capVisual);
+                }
+
+                _visibleVisuals.Add(capVisual);
+            }
+            else if (container.Children.Contains(capVisual))
+            {
+                container.Children.Remove(capVisual);
+                _visibleVisuals.Remove(capVisual);
             }
         }
     }

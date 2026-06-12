@@ -123,7 +123,7 @@ namespace CNCSS.Machine.Configuration
                 meshMap[nodeId] = components[i].Model;
             }
 
-            definition.SetMcsMarkerScenePosition(
+            definition.SetMcsOriginScene(
                 MachineAssemblyMetrics.ComputeSceneBoundsCenter(
                     definition,
                     meshMap,

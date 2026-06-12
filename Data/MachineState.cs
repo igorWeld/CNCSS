@@ -54,6 +54,12 @@ namespace CNCSS.Data
         /// <summary>Коррекция на длину инструмента (G43, G44, G49).</summary>
         public GCodeTemplate ToolLengthCompensation { get; set; } = GCodeRegistry.G49;
 
+        /// <summary>
+        /// Ось Z отражает целевую позицию с учётом G43/G44 (после блока с Z).
+        /// После G43/G44 без Z в блоке — false (физическая Z ещё без пересчёта под H).
+        /// </summary>
+        public bool IsMachineZSyncedWithLengthComp { get; set; }
+
         // Текущие координаты осей (физические, мм)
         public double X { get; set; }
         public double Y { get; set; }
@@ -124,7 +130,7 @@ namespace CNCSS.Data
         public double MachineZeroOffsetY { get; set; }
         public double MachineZeroOffsetZ { get; set; }
 
-        /// <summary>HOME по осям в MCS (мм) из профиля станка. Физическая цель G28/M6 = это + <see cref="MachineZeroOffset"/>.</summary>
+        /// <summary>HOME по осям в MCS (мм) из профиля станка. Физическая цель G28/M6 = это + MachineZeroOffsetX/Y/Z.</summary>
         public double AxisHomeMcsX { get; set; }
         public double AxisHomeMcsY { get; set; }
         public double AxisHomeMcsZ { get; set; }
@@ -168,6 +174,7 @@ namespace CNCSS.Data
             _currentMotionMode = GCodeRegistry.G0;
             CutterCompensation = GCodeRegistry.G40;
             ToolLengthCompensation = GCodeRegistry.G49;
+            IsMachineZSyncedWithLengthComp = false;
 
             var (homeX, homeY, homeZ) = GetG28PhysicalPosition();
             X = PreviousX = homeX;
@@ -233,6 +240,147 @@ namespace CNCSS.Data
             ToolLengthGeom.TryGetValue(h, out double g);
             ToolLengthWear.TryGetValue(h, out double w);
             return g + w;
+        }
+
+        /// <summary>
+        /// Сдвигает целевую машинную координату Z с учётом активной коррекции на длину (G43/G44) и номера H.
+        /// </summary>
+        public void ApplyToolLengthCompensationToMachineZ(ref double machineZ)
+        {
+            if (ToolLengthCompensation.Number is not (43 or 44))
+            {
+                return;
+            }
+
+            if (!ToolLengthOffset.HasValue)
+            {
+                return;
+            }
+
+            double h = GetEffectiveToolLength(ToolLengthOffset.Value);
+            if (Math.Abs(h) <= 1e-9)
+            {
+                return;
+            }
+
+            // Z+ вверх: при G43 положительная H поднимает шпиндель (+Z), кончик остаётся в запрограммированной Z.
+            machineZ += ToolLengthCompensation.Number == 44 ? -h : h;
+        }
+
+        /// <summary>
+        /// Машинная Z из слова Z блока: G90 — абсолютная координата кончика в WCS; G91 — приращение кончика в WCS.
+        /// Учитывает G43/G44, если модальность активна.
+        /// </summary>
+        public double ResolveMachineZFromProgramValue(double programZValue, double currentMachineZ)
+        {
+            GetProgramToMachineShift(out _, out _, out double shiftZ);
+
+            double workpieceTipZ;
+            if (IsAbsolute)
+            {
+                workpieceTipZ = programZValue;
+            }
+            else
+            {
+                MachineAxisToWorkpieceTip(X, Y, currentMachineZ, out _, out _, out double currentTipZ);
+                workpieceTipZ = currentTipZ + programZValue;
+            }
+
+            double machineZ = workpieceTipZ + shiftZ;
+            ApplyToolLengthCompensationToMachineZ(ref machineZ);
+            return machineZ;
+        }
+
+        /// <summary>Смещение WCS + ноль MCS для абсолютного режима (мм).</summary>
+        public void GetProgramToMachineShift(out double shiftX, out double shiftY, out double shiftZ)
+        {
+            var wcs = GetActiveWorkOffset();
+            double mcsX = IsAbsolute ? MachineZeroOffsetX : 0;
+            double mcsY = IsAbsolute ? MachineZeroOffsetY : 0;
+            double mcsZ = IsAbsolute ? MachineZeroOffsetZ : 0;
+            shiftX = wcs.X + mcsX;
+            shiftY = wcs.Y + mcsY;
+            shiftZ = wcs.Z + mcsZ;
+        }
+
+        /// <summary>
+        /// Машинные координаты осей → координаты кончика в WCS (X/Y/Z УП) для G2/G3 (I/J/K в ISO 6983).
+        /// По Z учитывается H только если <see cref="IsMachineZSyncedWithLengthComp"/>.
+        /// </summary>
+        public void MachineAxisToWorkpieceTip(double machineX, double machineY, double machineZ, out double workpieceX, out double workpieceY, out double workpieceZ)
+        {
+            GetProgramToMachineShift(out double shiftX, out double shiftY, out double shiftZ);
+            workpieceX = machineX - shiftX;
+            workpieceY = machineY - shiftY;
+            workpieceZ = machineZ - shiftZ;
+            if (IsMachineZSyncedWithLengthComp)
+            {
+                ApplyInverseToolLengthCompensationToProgramZ(ref workpieceZ);
+            }
+        }
+
+        /// <summary>Машинные координаты осей → координаты кончика в программе (G43/G44 учитываются по Z).</summary>
+        public void MachineTipToProgram(double machineX, double machineY, double machineZ, out double programX, out double programY, out double programZ)
+        {
+            GetProgramToMachineShift(out double shiftX, out double shiftY, out double shiftZ);
+            programX = machineX - shiftX;
+            programY = machineY - shiftY;
+            programZ = machineZ - shiftZ;
+            ApplyInverseToolLengthCompensationToProgramZ(ref programZ);
+        }
+
+        /// <summary>Координаты кончика в программе → машинные координаты осей.</summary>
+        public void ProgramTipToMachine(double programX, double programY, double programZ, out double machineX, out double machineY, out double machineZ)
+        {
+            GetProgramToMachineShift(out double shiftX, out double shiftY, out double shiftZ);
+            machineX = programX + shiftX;
+            machineY = programY + shiftY;
+            machineZ = programZ + shiftZ;
+            ApplyToolLengthCompensationToMachineZ(ref machineZ);
+        }
+
+        private void ApplyInverseToolLengthCompensationToProgramZ(ref double programZ)
+        {
+            if (ToolLengthCompensation.Number is not (43 or 44) || !ToolLengthOffset.HasValue)
+            {
+                return;
+            }
+
+            double h = GetEffectiveToolLength(ToolLengthOffset.Value);
+            if (Math.Abs(h) <= 1e-9)
+            {
+                return;
+            }
+
+            programZ += ToolLengthCompensation.Number == 44 ? h : -h;
+        }
+
+        /// <summary>Копирует таблицы корректоров H/D из другого снимка состояния.</summary>
+        public void CopyToolOffsetTablesFrom(MachineState source)
+        {
+            ToolLengthGeom.Clear();
+            ToolLengthWear.Clear();
+            ToolRadiusGeom.Clear();
+            ToolRadiusWear.Clear();
+            foreach (var pair in source.ToolLengthGeom)
+            {
+                ToolLengthGeom[pair.Key] = pair.Value;
+            }
+
+            foreach (var pair in source.ToolLengthWear)
+            {
+                ToolLengthWear[pair.Key] = pair.Value;
+            }
+
+            foreach (var pair in source.ToolRadiusGeom)
+            {
+                ToolRadiusGeom[pair.Key] = pair.Value;
+            }
+
+            foreach (var pair in source.ToolRadiusWear)
+            {
+                ToolRadiusWear[pair.Key] = pair.Value;
+            }
         }
 
         public double GetEffectiveToolRadius(int d)
@@ -394,7 +542,13 @@ namespace CNCSS.Data
         {
             if (compensation.Letter == GCodeRegistry.LETTER_G &&
                 compensation.Number is 43 or 44 or 49)
+            {
                 ToolLengthCompensation = compensation;
+                if (compensation.Number == 49)
+                {
+                    IsMachineZSyncedWithLengthComp = false;
+                }
+            }
         }
 
         /// <summary>Возвращает текущие координаты всех осей в виде массива.</summary>
@@ -438,6 +592,7 @@ namespace CNCSS.Data
                 CurrentMotionMode = this.CurrentMotionMode,
                 CutterCompensation = this.CutterCompensation,
                 ToolLengthCompensation = this.ToolLengthCompensation,
+                IsMachineZSyncedWithLengthComp = this.IsMachineZSyncedWithLengthComp,
                 X = this.X,
                 Y = this.Y,
                 Z = this.Z,

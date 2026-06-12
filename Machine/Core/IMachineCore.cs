@@ -34,5 +34,14 @@ namespace CNCSS.Machine.Core
 
         /// <summary>Применяет HOME и MCS-ноль из профиля станка к парсеру (G28/M6).</summary>
         void ApplyProfileHome(MachineDefinition profile);
+
+        /// <summary>Копирует таблицы корректоров H/D из контроллера (MDI) в целевое состояние.</summary>
+        void CopyToolOffsetTablesTo(MachineState target);
+
+        /// <summary>Записывает корректор H/D в таблицу контроллера (источник для G43/G41).</summary>
+        void SetToolOffsetRow(int row, double? geomH = null, double? wearH = null, double? geomD = null, double? wearD = null);
+
+        /// <summary>Снимок таблицы корректоров для отображения на панели OFFSET.</summary>
+        MachineState GetOffsetTableState();
     }
 }

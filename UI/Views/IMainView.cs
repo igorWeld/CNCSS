@@ -1,5 +1,6 @@
 using CNCSS.Data;
 using CNCSS.Logic.ProgramLoading;
+using CNCSS.Simulation.Execution;
 
 namespace CNCSS.UI.Views
 {
@@ -10,6 +11,7 @@ namespace CNCSS.UI.Views
     public interface IMainView
     {
         void BindProgram(ProgramLoadResult loadResult);
+        void ApplyPreparedProgram(PreparedProgramLoad prepared);
         void ClearProgramView();
         void SelectProgramLine(int index);
         void ApplyLineState(MachineState state);

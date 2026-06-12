@@ -60,9 +60,12 @@
             <MenuItem Header="_Симуляция">
                 <MenuItem Header="Программа..." Click="MenuProgramDialog_Click"/>
                 <MenuItem Header="Инструмент..." Click="MenuToolsDialog_Click"/>
-                <MenuItem Header="Заготовка..." Click="MenuStockDialog_Click"/>
+                <MenuItem Header="Заготовка">
+                    <MenuItem Header="Конструктор заготовки…" Click="MenuStockDialog_Click"/>
+                </MenuItem>
                 <MenuItem Header="Быстрые действия">
                     <MenuItem Header="Установить ноль" Click="MenuQuickWcsZero_Click"/>
+                    <MenuItem Header="Измерение инструмента" Click="MenuQuickMeasureTool_Click"/>
                 </MenuItem>
                 <MenuItem Header="Нулевая точка детали (WCS)">
                     <MenuItem Header="Центр заготовки (XY)">
@@ -97,20 +100,17 @@
                     <MenuItem Header="x15" Click="MenuSpeedPreset_Click" Tag="15"/>
                     <MenuItem Header="x20" Click="MenuSpeedPreset_Click" Tag="20"/>
                 </MenuItem>
-                <MenuItem Header="Заготовка" Visibility="Collapsed">
-                    <MenuItem x:Name="MenuStockVisibleItem" Header="Показывать заготовку" IsCheckable="True" IsChecked="True" Click="MenuStockVisible_Click"/>
-                    <Separator/>
-                    <MenuItem Header="Точность: высокая" Click="MenuResolution_Click" Tag="0.1"/>
-                    <MenuItem Header="Точность: средняя" Click="MenuResolution_Click" Tag="0.3"/>
-                    <MenuItem Header="Точность: грубая" Click="MenuResolution_Click" Tag="0.6"/>
-                    <Separator/>
-                    <MenuItem Header="Применить параметры заготовки" Click="ApplyStock_Click"/>
+                <MenuItem Header="Разрешение вокселей">
+                    <MenuItem Header="Высокое (0.01 мм)" Click="MenuVoxelResolution_Click" Tag="0.01"/>
+                    <MenuItem Header="Среднее (0.30 мм)" Click="MenuVoxelResolution_Click" Tag="0.3"/>
+                    <MenuItem Header="Грубое (0.60 мм)" Click="MenuVoxelResolution_Click" Tag="0.6"/>
                 </MenuItem>
             </MenuItem>
             <MenuItem Header="_Станок">
                 <MenuItem Header="Настройка модели станка…" Click="MenuMachineSetup_Click"/>
                 <MenuItem Header="Выбрать профиль станка…" Click="MenuMachineProfile_Click"/>
                 <Separator/>
+                <MenuItem Header="Сохранить текущие настройки как заводские" Click="MenuMachineSaveFactoryDefault_Click"/>
                 <MenuItem Header="Сбросить заводской профиль" Click="MenuMachineFactoryReset_Click"/>
             </MenuItem>
             <MenuItem Header="_Окна">
@@ -155,6 +155,10 @@
             <Separator Background="#40FFFFFF"/>
             <StatusBarItem>
                 <TextBlock x:Name="RuntimeLoadText" Text="CPU: 0% | GPU: 0%" Margin="4,0" FontSize="11" Foreground="#FF9FD7FF"/>
+            </StatusBarItem>
+            <Separator Background="#40FFFFFF"/>
+            <StatusBarItem>
+                <TextBlock x:Name="VoxelResolutionStatusText" Text="Воксели: Среднее (0.30 мм)" Margin="4,0" FontSize="11" Foreground="#FFCDE8FF"/>
             </StatusBarItem>
             <Separator Background="#40FFFFFF"/>
             <StatusBarItem HorizontalContentAlignment="Stretch">
@@ -212,7 +216,7 @@
                     </ToggleButton>
 
                     <!-- 3) Stock / part -->
-                    <ToggleButton x:Name="FilterShowStock" Style="{StaticResource SceneFilterIconToggle}" IsChecked="True"
+                    <ToggleButton x:Name="FilterShowStock" Style="{StaticResource SceneFilterIconToggle}" IsChecked="False"
                                   Checked="SceneFilter_Changed" Unchecked="SceneFilter_Changed"
                                   ToolTip="Показывать заготовку">
                         <Viewbox Width="22" Height="22">
@@ -484,39 +488,6 @@
                 </StackPanel>
             </Border>
 
-            <!-- Hidden technical host: keeps bindings/events used by runtime logic. -->
-            <Border Grid.Column="0" Visibility="Collapsed">
-                <Grid>
-                    <ListBox x:Name="GCodeList" SelectionChanged="GCodeList_SelectionChanged"/>
-                    <ListBox x:Name="ToolsList" SelectionChanged="ToolsList_SelectionChanged"/>
-                    <TextBox x:Name="StatsBox"/>
-                    <Button x:Name="PlayButton" Click="PlayButton_Click"/>
-                    <Button x:Name="StopButton" Click="StopButton_Click"/>
-                    <Button x:Name="PauseButton" Click="PauseButton_Click"/>
-                    <TextBlock x:Name="WorkOverrideText"/>
-                    <Slider x:Name="WorkOverrideSlider" Minimum="0" Maximum="120" Value="100" ValueChanged="OverrideSlider_ValueChanged"/>
-                    <TextBlock x:Name="RapidOverrideText"/>
-                    <Slider x:Name="RapidOverrideSlider" Minimum="0" Maximum="120" Value="100" ValueChanged="OverrideSlider_ValueChanged"/>
-                    <CheckBox x:Name="StockVisibleCheck" IsChecked="True" Checked="StockVisible_Changed" Unchecked="StockVisible_Changed"/>
-                    <TextBox x:Name="StockMinX" Text="-50"/>
-                    <TextBox x:Name="StockMinY" Text="-50"/>
-                    <TextBox x:Name="StockMinZ" Text="-20"/>
-                    <TextBox x:Name="StockMaxX" Text="50"/>
-                    <TextBox x:Name="StockMaxY" Text="50"/>
-                    <TextBox x:Name="StockMaxZ" Text="0"/>
-                    <ComboBox x:Name="StockColorCombo" SelectionChanged="StockColor_SelectionChanged">
-                        <ComboBoxItem Content="Серый" Tag="LightGray" IsSelected="True"/>
-                        <ComboBoxItem Content="Зеленый" Tag="LightGreen"/>
-                        <ComboBoxItem Content="Синий" Tag="LightBlue"/>
-                        <ComboBoxItem Content="Дерево" Tag="BurlyWood"/>
-                        <ComboBoxItem Content="Медь" Tag="Coral"/>
-                    </ComboBox>
-                    <Button x:Name="FineResButton" Tag="0.1" Click="ResButton_Click"/>
-                    <Button x:Name="MediumResButton" Tag="0.3" Click="ResButton_Click"/>
-                    <Button x:Name="CoarseResButton" Tag="0.6" Click="ResButton_Click"/>
-                    <CheckBox x:Name="AutoStockCheck" IsChecked="True"/>
-                </Grid>
-            </Border>
         </Grid>
     </DockPanel>
 </Window>

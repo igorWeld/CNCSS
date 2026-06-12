@@ -40,7 +40,8 @@ namespace CNCSS.Vis
         /// <summary>Стабильная ссылка для Viewport3D: меняем только дочерние chunk-группы инкрементально.</summary>
         private readonly Model3DGroup _presentationRoot = new();
         private const int ChunkMaskLength = VoxelChunk.Size * VoxelChunk.Size;
-        private const uint DefaultSurfaceColor = 0xFF808080;
+        private const uint DefaultSurfaceColorFallback = 0xFF808080;
+        private readonly uint _defaultSurfaceColor;
 
         /// <summary>Пересборка грязных чанков — можно задействовать все ядра.</summary>
         private static readonly ParallelOptions CpuParallelMesh =
@@ -149,8 +150,13 @@ namespace CNCSS.Vis
             return need;
         }
 
-        public VoxelStock(double width, double depth, double height, double resolution, Point3D center, double maxZ)
+        /// <summary>
+        /// Прямоугольный объём: все ячейки заняты (без маски формы).
+        /// <paramref name="defaultSurfaceColor"/> — цвет из конструктора заготовки; иначе светло-серый.
+        /// </summary>
+        public VoxelStock(double width, double depth, double height, double resolution, Point3D center, double maxZ, Color? defaultSurfaceColor = null)
         {
+            _defaultSurfaceColor = defaultSurfaceColor.HasValue ? PackColor(defaultSurfaceColor.Value) : DefaultSurfaceColorFallback;
             _resolution = resolution;
             _sizeX = Math.Max(1, (int)(width / resolution));
             _sizeY = Math.Max(1, (int)(depth / resolution));
@@ -173,8 +179,9 @@ namespace CNCSS.Vis
         }
 
         /// <summary>
-        /// Заготовка из плотной маски GPU (1 = материал, 0 = пусто).
+        /// Заготовка из плотной маски (1 = материал, 0 = пусто), в т.ч. из <see cref="StockSimulationCoordinator"/>.
         /// Индексация: ix + sx * (iy + sy * iz), как в <c>CNCSS.GpuVerification</c>.
+        /// <paramref name="defaultSurfaceColor"/> — цвет из конструктора заготовки.
         /// </summary>
         public static VoxelStock FromGpuOccupancyMask(
             double width,
@@ -183,9 +190,10 @@ namespace CNCSS.Vis
             double resolutionMm,
             Point3D center,
             double maxZ,
-            uint[] occupancyGpu)
+            uint[] occupancyGpu,
+            Color? defaultSurfaceColor = null)
         {
-            var stock = new VoxelStock(width, depth, height, resolutionMm, center, maxZ);
+            var stock = new VoxelStock(width, depth, height, resolutionMm, center, maxZ, defaultSurfaceColor);
             int cells = checked(stock._sizeX * stock._sizeY * stock._sizeZ);
             if (occupancyGpu.Length != cells)
             {
@@ -251,7 +259,7 @@ namespace CNCSS.Vis
                                     continue;
                                 }
 
-                                if (_chunks[cx, cy, cz].ClearVoxel(lx, ly, lz, DefaultSurfaceColor))
+                                if (_chunks[cx, cy, cz].ClearVoxel(lx, ly, lz, _defaultSurfaceColor))
                                 {
                                     modified = true;
                                 }
@@ -577,7 +585,7 @@ namespace CNCSS.Vis
                                         if (gz < minZ || gz > maxZ) continue;
                                         if (chunk.GetVoxel(lx, ly, lz))
                                         {
-                                            chunk.SetVoxel(lx, ly, lz, false, DefaultSurfaceColor);
+                                            chunk.SetVoxel(lx, ly, lz, false, _defaultSurfaceColor);
                                             changed = true;
                                         }
                                     }
@@ -1046,12 +1054,8 @@ namespace CNCSS.Vis
                 }
             }
 
-            // Полный скан дорогой: выполняем периодически для валидации или когда hints пусты.
-            bool runValidationScan = _dirtyChunkHints.IsEmpty || (++_collectAllValidationTick & 0xF) == 0;
-            if (!runValidationScan)
-            {
-                return dirty;
-            }
+            // Полный проход: всегда добираем оставшиеся грязные чанки (иначе IsDirty «залипает» и UI крутит пересборку бесконечно).
+            _ = _collectAllValidationTick++;
 
             for (int cz = 0; cz < _chunkCountZ; cz++)
             {
@@ -1525,7 +1529,7 @@ namespace CNCSS.Vis
                 return color;
             }
 
-            return DefaultSurfaceColor;
+            return _defaultSurfaceColor;
         }
 
         private static uint PackColor(Color color)

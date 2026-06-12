@@ -32,7 +32,8 @@ namespace CNCSS.Infrastructure.Composition
             StockRenderService = new StockRenderService();
             ToolpathRenderService = new ToolpathRenderService();
             ToolpathSceneBuilder = new ToolpathSceneBuilder();
-            ProgramLoadOrchestrator = new ProgramLoadOrchestrator(ProgramWorkspace, ProgramExecutionService, ProgramPlaybackHost, ToolpathSceneBuilder);
+            StockLifecycleCoordinator = new StockLifecycleCoordinator(StockCoordinator);
+            ProgramLoadOrchestrator = new ProgramLoadOrchestrator(ProgramWorkspace, ProgramExecutionService, ProgramPlaybackHost);
             NcProgramCatalogService = new NcProgramCatalogService();
             MachineProfileStore = new MachineProfileStore();
             MachineProfileService = new MachineProfileService(MachineProfileStore);
@@ -50,6 +51,7 @@ namespace CNCSS.Infrastructure.Composition
         public ProgramWorkspace ProgramWorkspace { get; }
         public CycleCoordinator CycleCoordinator { get; }
         public StockSimulationCoordinator StockCoordinator { get; }
+        public StockLifecycleCoordinator StockLifecycleCoordinator { get; }
         public ProgramPlaybackHost ProgramPlaybackHost { get; }
         public UiRenderService UiRenderService { get; }
         public StockRenderService StockRenderService { get; }

@@ -249,8 +249,17 @@ namespace CNCSS.Logic
 
             if (parameters.ContainsKey(GCodeRegistry.PARAM_Z))
             {
-                newZ = ResolveAxisTarget(parameters[GCodeRegistry.PARAM_Z], State.Z, wZ + mZ);
-                command.Z = parameters[GCodeRegistry.PARAM_Z];
+                double programZ = parameters[GCodeRegistry.PARAM_Z];
+                command.Z = programZ;
+                if (useMachineCoordinatesThisBlock)
+                {
+                    newZ = ResolveAxisTarget(programZ, State.Z, wZ + mZ);
+                    State.ApplyToolLengthCompensationToMachineZ(ref newZ);
+                }
+                else
+                {
+                    newZ = State.ResolveMachineZFromProgramValue(programZ, State.Z);
+                }
             }
 
             if (parameters.ContainsKey(GCodeRegistry.PARAM_A))
@@ -271,19 +280,16 @@ namespace CNCSS.Logic
                 command.C = parameters[GCodeRegistry.PARAM_C];
             }
 
-            // Tool length compensation (G43/G44) affects machine Z target.
-            if (State.ToolLengthCompensation.Number is 43 or 44
-                && State.ToolLengthOffset.HasValue
-                && parameters.ContainsKey(GCodeRegistry.PARAM_Z))
+            if (parameters.ContainsKey(GCodeRegistry.PARAM_Z))
             {
-                double h = State.GetEffectiveToolLength(State.ToolLengthOffset.Value);
-                if (Math.Abs(h) > 0.0000001)
+                if (State.ToolLengthCompensation.Number is 43 or 44)
                 {
-                    // Our machine axis convention uses Z+ upwards; to keep tool tip at programmed Z,
-                    // G43 (positive length compensation) shifts the machine axis in the negative Z direction.
-                    // G44 applies the opposite sign.
-                    newZ += State.ToolLengthCompensation.Number == 44 ? h : -h;
+                    State.IsMachineZSyncedWithLengthComp = true;
                 }
+            }
+            else if (command.GCodes.Any(g => g.Number is 43 or 44))
+            {
+                State.IsMachineZSyncedWithLengthComp = false;
             }
 
             // Cutter radius compensation: simple linear offset for G17 plane (XY).
@@ -319,9 +325,11 @@ namespace CNCSS.Logic
             {
                 bool hasArcData = command.I.HasValue || command.J.HasValue || command.K.HasValue || command.R.HasValue;
                 if (hasArcData &&
-                    ArcCalculator.TryComputeArc(
+                    ArcMotionPlanner.TryComputeMachineArc(
+                        State,
                         State.X, State.Y, State.Z,
                         newX, newY, newZ,
+                        command.X, command.Y, command.Z,
                         State.CurrentPlane,
                         State.CurrentMotionMode.Number == 2,
                         command.I, command.J, command.K, command.R,

@@ -47,6 +47,17 @@ namespace CNCSS.Vis
                 BuildStatsText(loadResult.FullPath, loadResult.Parser, segmentsWithLines.Select(s => s.Segment).ToList()));
         }
 
+        public static string BuildStatsText(
+            IReadOnlyList<ToolpathSegmentWithLine> segmentsWithLines,
+            string? filePath = null,
+            GCodeParser? parser = null)
+        {
+            var segments = segmentsWithLines.Select(s => s.Segment).ToList();
+            string path = filePath ?? string.Empty;
+            GCodeParser p = parser ?? new GCodeParser();
+            return BuildStatsText(path, p, segments);
+        }
+
         private static string BuildStatsText(string filePath, GCodeParser parser, List<ToolpathSegment> segments)
         {
             var sb = new StringBuilder();

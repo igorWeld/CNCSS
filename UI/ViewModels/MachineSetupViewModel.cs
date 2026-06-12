@@ -457,6 +457,7 @@ namespace CNCSS.UI.ViewModels
             _draft.ExtraNodes = extras;
             _draft.ToolMountNodeId = ToolMountNodeId;
             _draft.ToolMount = new MachineGeometryPoint { X = ToolMountX, Y = ToolMountY, Z = ToolMountZ };
+            _draft.ToolMountIsNodeLocal = true;
             _draft.WorkpieceMount = new MachineGeometryPoint
             {
                 X = WorkpieceMountX,
@@ -1291,6 +1292,8 @@ namespace CNCSS.UI.ViewModels
             SelectProfileInList(activeId);
         }
 
+        public void SaveAsFactoryDefault() => _profileService.SaveActiveProfileAsFactoryDefault();
+
         public void ResetFactory(StlMeshLoader stlLoader) =>
             _profileService.ResetToFactoryDefault(stlLoader);
 
@@ -1369,14 +1372,18 @@ namespace CNCSS.UI.ViewModels
             StatusMessage = "Станок выровнен: выбранная точка в начале координат сцены, MCS в (0,0,0).";
         }
 
-        public void CenterToolMountXY()
+        public bool TryCenterToolMountXY(Point3D centerInNodeFrame)
         {
-            ApplyToolMount(ToolMountHelper.CenterXY(new MachineGeometryPoint
+            if (centerInNodeFrame.X is double.NaN or double.PositiveInfinity or double.NegativeInfinity ||
+                centerInNodeFrame.Y is double.NaN or double.PositiveInfinity or double.NegativeInfinity)
             {
-                X = ToolMountX,
-                Y = ToolMountY,
-                Z = ToolMountZ
-            }));
+                return false;
+            }
+
+            ApplyToolMount(ToolMountHelper.CenterXY(
+                centerInNodeFrame,
+                new MachineGeometryPoint { X = ToolMountX, Y = ToolMountY, Z = ToolMountZ }));
+            return true;
         }
 
         public void ApplyWorkpieceMount(MachineGeometryPoint mount)
@@ -1408,7 +1415,7 @@ namespace CNCSS.UI.ViewModels
         {
             string nodeName = PreviewNodeOptions.FirstOrDefault(n => string.Equals(n.Id, ToolMountNodeId, StringComparison.OrdinalIgnoreCase))?.DisplayName
                 ?? ToolMountNodeId;
-            ToolMountSummary = $"Узел: {nodeName} | TCP (MCS мм): {ToolMountX:F1}, {ToolMountY:F1}, {ToolMountZ:F1}";
+            ToolMountSummary = $"Узел: {nodeName} | TCP (лок. узла, мм): {ToolMountX:F1}, {ToolMountY:F1}, {ToolMountZ:F1}";
         }
 
         private void UpdateWorkpieceMountSummary()

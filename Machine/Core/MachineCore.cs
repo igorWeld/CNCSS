@@ -30,9 +30,6 @@ namespace CNCSS.Machine.Core
             _kinematics = kinematics;
             _controllerCommandSubscription = _bus.Subscribe<ControllerCommandEvent>(HandleControllerCommand);
             _mdiParser = new GCodeParser();
-            // Minimal defaults for early compensation behavior testing (can be overwritten later from UI).
-            _mdiParser.State.SetToolLengthOffsetValue(1, geom: 100.0);
-            _mdiParser.State.SetToolRadiusOffsetValue(1, geom: 5.0);
             Home();
             PublishWorkOffsetsChanged();
         }
@@ -53,6 +50,29 @@ namespace CNCSS.Machine.Core
 
         public void ApplyProfileHome(MachineDefinition profile) =>
             profile.ApplyHomeToMachineState(_mdiParser.State);
+
+        public void CopyToolOffsetTablesTo(MachineState target) =>
+            target.CopyToolOffsetTablesFrom(_mdiParser.State);
+
+        public void SetToolOffsetRow(int row, double? geomH = null, double? wearH = null, double? geomD = null, double? wearD = null)
+        {
+            if (row <= 0)
+            {
+                return;
+            }
+
+            if (geomH.HasValue || wearH.HasValue)
+            {
+                _mdiParser.State.SetToolLengthOffsetValue(row, geom: geomH, wear: wearH);
+            }
+
+            if (geomD.HasValue || wearD.HasValue)
+            {
+                _mdiParser.State.SetToolRadiusOffsetValue(row, geom: geomD, wear: wearD);
+            }
+        }
+
+        public MachineState GetOffsetTableState() => _mdiParser.State.Clone();
 
         public void SyncRuntimeFromState(MachineState source)
         {
@@ -277,8 +297,15 @@ namespace CNCSS.Machine.Core
                 case "WearD":
                     _mdiParser.State.SetToolRadiusOffsetValue(row, wear: value);
                     break;
+                default:
+                    return;
             }
+
+            PublishToolOffsetsChanged();
         }
+
+        private void PublishToolOffsetsChanged() =>
+            _bus.Publish(new ToolOffsetsChangedEvent(DateTime.UtcNow));
 
         private void ApplyJog(string? payload)
         {

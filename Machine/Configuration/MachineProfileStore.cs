@@ -16,9 +16,10 @@ namespace CNCSS.Machine.Configuration
 
         private readonly string _rootDirectory;
 
-        public MachineProfileStore(string? rootDirectory = null)
+        public MachineProfileStore(string? rootDirectory = null, string? factorySnapshotDirectory = null)
         {
             _rootDirectory = rootDirectory ?? GetDefaultRootDirectory();
+            FactorySnapshotDirectory = factorySnapshotDirectory ?? GetDefaultFactorySnapshotDirectory();
             if (rootDirectory == null)
             {
                 MigrateLegacyProfilesIfNeeded();
@@ -38,6 +39,20 @@ namespace CNCSS.Machine.Configuration
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "CNCSS",
                 "Machines");
+
+        /// <summary>Снимок заводских настроек (machine.json + STL), задаётся пользователем.</summary>
+        public static string GetDefaultFactorySnapshotDirectory() =>
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                "CNCSS",
+                "FactoryMachine");
+
+        public string FactorySnapshotDirectory { get; }
+
+        public string GetFactorySnapshotFilePath() =>
+            Path.Combine(FactorySnapshotDirectory, "machine.json");
+
+        public bool HasFactorySnapshot() => File.Exists(GetFactorySnapshotFilePath());
 
         public string GetProfileDirectory(string profileId) =>
             Path.Combine(_rootDirectory, SanitizeProfileId(profileId));
@@ -102,6 +117,52 @@ namespace CNCSS.Machine.Configuration
             Directory.CreateDirectory(dir);
             string path = GetProfileFilePath(profileId);
             File.WriteAllText(path, JsonSerializer.Serialize(definition, JsonOptions));
+        }
+
+        /// <summary>Копирует папку профиля в снимок заводских настроек.</summary>
+        public void SaveFactorySnapshotFromProfile(string sourceProfileId)
+        {
+            sourceProfileId = SanitizeProfileId(sourceProfileId);
+            string sourceDir = GetProfileDirectory(sourceProfileId);
+            if (!File.Exists(GetProfileFilePath(sourceProfileId)))
+            {
+                throw new InvalidOperationException($"Профиль «{sourceProfileId}» не найден.");
+            }
+
+            if (Directory.Exists(FactorySnapshotDirectory))
+            {
+                Directory.Delete(FactorySnapshotDirectory, recursive: true);
+            }
+
+            CopyDirectoryFiles(sourceDir, FactorySnapshotDirectory);
+        }
+
+        /// <summary>Восстанавливает профиль <c>default</c> из пользовательского заводского снимка.</summary>
+        public MachineDefinition RestoreFactorySnapshotAsDefault()
+        {
+            if (!HasFactorySnapshot())
+            {
+                throw new InvalidOperationException("Заводской снимок не сохранён.");
+            }
+
+            const string defaultId = "default";
+            string destDir = GetProfileDirectory(defaultId);
+            if (Directory.Exists(destDir))
+            {
+                Directory.Delete(destDir, recursive: true);
+            }
+
+            CopyDirectoryFiles(FactorySnapshotDirectory, destDir);
+
+            MachineDefinition definition = Load(defaultId);
+            definition.ProfileId = defaultId;
+            if (string.IsNullOrWhiteSpace(definition.DisplayName))
+            {
+                definition.DisplayName = "Станок по умолчанию";
+            }
+
+            Save(definition);
+            return Load(defaultId);
         }
 
         /// <summary>Copies a portable profile folder (machine.json + STL) into the library.</summary>

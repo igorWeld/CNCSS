@@ -11,6 +11,7 @@ using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using CNCSS.Data;
 using CNCSS.Logic.NcPrograms;
 using CNCSS.Machine.Model;
 
@@ -1554,6 +1555,48 @@ namespace CNCSS.UI.FanucPanel
             UpdateSoftKeyBar();
         }
 
+        /// <summary>Загружает таблицу OFFSET из снимка контроллера (GEOM/WEAR H и D).</summary>
+        public void ImportToolOffsetsFrom(MachineState state)
+        {
+            for (int row = 1; row <= OffsetToolTotalRows; row++)
+            {
+                _offsetToolValues[row, (int)OffsetToolColumn.GeomH] =
+                    state.ToolLengthGeom.TryGetValue(row, out double geomH) ? geomH : 0;
+                _offsetToolValues[row, (int)OffsetToolColumn.WearH] =
+                    state.ToolLengthWear.TryGetValue(row, out double wearH) ? wearH : 0;
+                _offsetToolValues[row, (int)OffsetToolColumn.GeomD] =
+                    state.ToolRadiusGeom.TryGetValue(row, out double geomD) ? geomD : 0;
+                _offsetToolValues[row, (int)OffsetToolColumn.WearD] =
+                    state.ToolRadiusWear.TryGetValue(row, out double wearD) ? wearD : 0;
+            }
+
+            SnapOffsetToolPageToSelection();
+            RefreshOffsetToolPage();
+            ApplyOffsetToolSelectionVisual();
+        }
+
+        /// <summary>Записать GEOM(H)/GEOM(D) в таблицу OFFSET (строка = номер H/D).</summary>
+        public void SetToolOffsetDisplayValue(int row, OffsetToolColumn column, double value)
+        {
+            if (row < 1 || row > OffsetToolTotalRows)
+            {
+                return;
+            }
+
+            int col = (int)column;
+            if (col is < 1 or > 4)
+            {
+                return;
+            }
+
+            _offsetToolValues[row, col] = value;
+            _offsetToolSelectedRow = row;
+            _offsetToolSelectedCol = col;
+            SnapOffsetToolPageToSelection();
+            RefreshOffsetToolPage();
+            ApplyOffsetToolSelectionVisual();
+        }
+
         private void OffsetToolApplyInputToSelectedCell(bool add)
         {
             if (_offsetSubPage != OffsetSubPage.ToolOffset)
@@ -2744,11 +2787,6 @@ namespace CNCSS.UI.FanucPanel
         }
 
         private void MdiExec_Click(object sender, RoutedEventArgs e) => ExecuteMdiFromBuffer();
-
-        private void MdiExecLegacy_Click(object sender, RoutedEventArgs e)
-        {
-            SetAlarm("USE INPUT FOR MDI", false);
-        }
 
         private void InsertMdiAtCaret(string valueToAppend)
         {

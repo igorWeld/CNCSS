@@ -11,6 +11,7 @@ public sealed class StockSimulationCoordinatorTests
 
         using var runtime = DisposableStockRuntime.Wrap(coordinator.CreateRuntime(
             new StockVolumeConfig(-1, 1, -1, 1, -1, 1),
+            CNCSS.Data.ProjectConstants.RES_MEDIUM,
             enableGpuVerification: false));
 
         Assert.NotNull(runtime.Value.Stock);

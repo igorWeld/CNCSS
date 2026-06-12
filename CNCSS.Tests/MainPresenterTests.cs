@@ -6,11 +6,11 @@ using CNCSS.Logic.ProgramLoading;
 using CNCSS.Simulation.Bus;
 using CNCSS.Simulation.Execution;
 using CNCSS.Machine.Core;
+using CNCSS.Machine.Model;
 using CNCSS.UI.Presenters;
 using CNCSS.UI.Views;
 using CNCSS.Controller.Core;
 using CNCSS.UI.Hosts;
-using CNCSS.Vis;
 
 namespace CNCSS.Tests;
 
@@ -26,10 +26,11 @@ public sealed class MainPresenterTests
 
         try
         {
-            presenter.LoadProgram(path);
+            presenter.LoadProgram(path, new MachineState(), new MachineDefinition(), toolStickOutMm: 0);
 
             Assert.Single(view.BoundLines);
             Assert.Contains("Program loaded:", view.Status);
+            Assert.Contains("Сегментов пути", view.Stats);
         }
         finally
         {
@@ -61,8 +62,7 @@ public sealed class MainPresenterTests
         var orchestrator = new ProgramLoadOrchestrator(
             new ProgramWorkspace(new ProgramLoader(), new ProgramStateService()),
             execution,
-            playbackHost,
-            new ToolpathSceneBuilder());
+            playbackHost);
         return new MainPresenter(
             view,
             orchestrator,
@@ -73,11 +73,13 @@ public sealed class MainPresenterTests
     {
         public string[] BoundLines { get; private set; } = Array.Empty<string>();
         public string Status { get; private set; } = string.Empty;
+        public string Stats { get; private set; } = string.Empty;
         public int SelectedLine { get; private set; } = -1;
         public bool CanStart { get; private set; }
         public bool CanPause { get; private set; }
 
         public void BindProgram(ProgramLoadResult loadResult) => BoundLines = loadResult.Lines;
+        public void ApplyPreparedProgram(PreparedProgramLoad prepared) => Stats = prepared.StatsText;
         public void ClearProgramView() => BoundLines = Array.Empty<string>();
         public void SelectProgramLine(int index) => SelectedLine = index;
         public void ApplyLineState(MachineState state) { }

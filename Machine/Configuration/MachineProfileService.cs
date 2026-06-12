@@ -66,9 +66,24 @@ namespace CNCSS.Machine.Configuration
             return profileId;
         }
 
+        public void SaveActiveProfileAsFactoryDefault()
+        {
+            SaveProfile(_active.Clone(), makeActive: true);
+            _store.SaveFactorySnapshotFromProfile(_active.ProfileId);
+        }
+
+        public bool HasUserFactorySnapshot() => _store.HasFactorySnapshot();
+
         public void ResetToFactoryDefault(StlMeshLoader stlLoader)
         {
             ArgumentNullException.ThrowIfNull(stlLoader);
+            if (_store.HasFactorySnapshot())
+            {
+                _store.RestoreFactorySnapshotAsDefault();
+                SetActiveProfile("default");
+                return;
+            }
+
             if (File.Exists(MachineProfileBootstrap.GetBundledStepPath()))
             {
                 RecreateDefaultFromBundledAssembly(stlLoader);
