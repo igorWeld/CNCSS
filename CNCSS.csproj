@@ -2,37 +2,31 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
     <RootNamespace>CNCSS</RootNamespace>
     <AssemblyName>CNCSS</AssemblyName>
     <Product>CNCSS</Product>
     <Description>Симулятор G-кода и воксельного съёма заготовки: WPF, Helix Toolkit.</Description>
-    <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <NoWarn>$(NoWarn);NU1701;1591</NoWarn>
-    <PlatformTarget>x64</PlatformTarget>
-    <Prefer32Bit>false</Prefer32Bit>
-    <Platforms>x64</Platforms>
-    <Platform Condition="'$(Platform)' == ''">x64</Platform>
   </PropertyGroup>
   <ItemGroup>
-    <InternalsVisibleTo Include="CNCSS.Tests" />
-    <PackageReference Include="AssimpNet" Version="5.0.0-beta1" />
     <PackageReference Include="HelixToolkit.Wpf" Version="2.25.0" />
-    <PackageReference Include="Occt.NET" Version="7.9.0" />
+    <PackageReference Include="HelixToolkit.Wpf.SharpDX" Version="2.25.0" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="CNCSS.GpuVerification\CNCSS.GpuVerification.csproj" />
+    <InternalsVisibleTo Include="CNCSS.Tests" />
+    <ProjectReference Include="src\CNCSS.Visualization\CNCSS.Visualization.csproj" />
+    <ProjectReference Include="src\CNCSS.Logic\CNCSS.Logic.csproj" />
   </ItemGroup>
-  <!-- Иначе Sdk автоматически включает все CNCSS.GpuVerification\*.cs в сборку приложения рядом с основным проектом. -->
   <ItemGroup>
-    <Compile Remove="CNCSS.GpuVerification\**\*.cs" />
     <Compile Remove="CNCSS.Tests\**\*.cs" />
     <Compile Remove="_occtprobe\**\*.cs" />
+    <Compile Remove="src\**\*.cs" />
+    <Compile Remove="native\**\*.cs" />
+    <Page Remove="src\**\*.xaml" />
+    <ApplicationDefinition Remove="src\**\*.xaml" />
   </ItemGroup>
-  <!-- Без глобальных Using для Forms/Drawing — иначе конфликты с типами WPF (Color, Application, …). -->
   <ItemGroup>
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />
@@ -48,8 +42,6 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
-
-  <!-- NuGet Occt.NET копирует Occt.NET.dll и в корень, и в occt\x64 — из корня IJW не находит TK*.dll. -->
   <Target Name="RemoveDuplicateOcctFromOutputRoot" AfterTargets="CopyOcctInteropFiles">
     <PropertyGroup>
       <_OcctNativeDir>$(TargetDir)occt\x64</_OcctNativeDir>
@@ -57,8 +49,6 @@
     <Delete Files="$(TargetDir)Occt.NET.dll" Condition="Exists('$(_OcctNativeDir)\Occt.NET.dll')" />
     <Delete Files="$(TargetDir)Ijwhost.dll" Condition="Exists('$(_OcctNativeDir)\Ijwhost.dll')" />
   </Target>
-
-  <!-- Сгенерированный OcctConfiguration.cs использует устаревший Assembly.CodeBase и не работает в .NET 8. -->
   <Target Name="RemoveBrokenOcctConfigurationSource" BeforeTargets="CoreCompile">
     <ItemGroup>
       <Compile Remove="@(Compile)" Condition="$([System.String]::Copy('%(FullPath)').Contains('OcctConfiguration.cs'))" />

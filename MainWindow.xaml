@@ -2,8 +2,8 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:hx="http://helix-toolkit.org/wpf"
-        xmlns:fanuc="clr-namespace:CNCSS.UI.FanucPanel"
-        xmlns:ops="clr-namespace:CNCSS.UI.OperatorStation"
+        xmlns:fanuc="clr-namespace:CNCSS.UI.FanucPanel;assembly=CNCSS.Visualization"
+        xmlns:ops="clr-namespace:CNCSS.UI.OperatorStation;assembly=CNCSS.Visualization"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
@@ -13,7 +13,7 @@
     <Window.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="pack://application:,,,/UI/Themes/FanucPanelResources.xaml"/>
+                <ResourceDictionary Source="pack://application:,,,/CNCSS.Visualization;component/UI/Themes/FanucPanelResources.xaml"/>
             </ResourceDictionary.MergedDictionaries>
 
             <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
@@ -67,31 +67,6 @@
                     <MenuItem Header="Установить ноль" Click="MenuQuickWcsZero_Click"/>
                     <MenuItem Header="Измерение инструмента" Click="MenuQuickMeasureTool_Click"/>
                 </MenuItem>
-                <MenuItem Header="Нулевая точка детали (WCS)">
-                    <MenuItem Header="Центр заготовки (XY)">
-                        <MenuItem Header="Верхний торец (Z max)" Click="MenuStockWcsZero_Click" Tag="Center,Top"/>
-                        <MenuItem Header="Нижний торец (Z min)" Click="MenuStockWcsZero_Click" Tag="Center,Bottom"/>
-                    </MenuItem>
-                    <MenuItem Header="Угол заготовки (XY)">
-                        <MenuItem Header="Min X, Min Y">
-                            <MenuItem Header="Верхний торец (Z max)" Click="MenuStockWcsZero_Click" Tag="MinMin,Top"/>
-                            <MenuItem Header="Нижний торец (Z min)" Click="MenuStockWcsZero_Click" Tag="MinMin,Bottom"/>
-                        </MenuItem>
-                        <MenuItem Header="Max X, Min Y">
-                            <MenuItem Header="Верхний торец (Z max)" Click="MenuStockWcsZero_Click" Tag="MaxMin,Top"/>
-                            <MenuItem Header="Нижний торец (Z min)" Click="MenuStockWcsZero_Click" Tag="MaxMin,Bottom"/>
-                        </MenuItem>
-                        <MenuItem Header="Min X, Max Y">
-                            <MenuItem Header="Верхний торец (Z max)" Click="MenuStockWcsZero_Click" Tag="MinMax,Top"/>
-                            <MenuItem Header="Нижний торец (Z min)" Click="MenuStockWcsZero_Click" Tag="MinMax,Bottom"/>
-                        </MenuItem>
-                        <MenuItem Header="Max X, Max Y">
-                            <MenuItem Header="Верхний торец (Z max)" Click="MenuStockWcsZero_Click" Tag="MaxMax,Top"/>
-                            <MenuItem Header="Нижний торец (Z min)" Click="MenuStockWcsZero_Click" Tag="MaxMax,Bottom"/>
-                        </MenuItem>
-                    </MenuItem>
-                </MenuItem>
-                <Separator/>
                 <Separator/>
                 <MenuItem Header="Скорость">
                     <MenuItem Header="x2" Click="MenuSpeedPreset_Click" Tag="2"/>
@@ -99,11 +74,6 @@
                     <MenuItem Header="x9" Click="MenuSpeedPreset_Click" Tag="9"/>
                     <MenuItem Header="x15" Click="MenuSpeedPreset_Click" Tag="15"/>
                     <MenuItem Header="x20" Click="MenuSpeedPreset_Click" Tag="20"/>
-                </MenuItem>
-                <MenuItem Header="Разрешение вокселей">
-                    <MenuItem Header="Высокое (0.01 мм)" Click="MenuVoxelResolution_Click" Tag="0.01"/>
-                    <MenuItem Header="Среднее (0.30 мм)" Click="MenuVoxelResolution_Click" Tag="0.3"/>
-                    <MenuItem Header="Грубое (0.60 мм)" Click="MenuVoxelResolution_Click" Tag="0.6"/>
                 </MenuItem>
             </MenuItem>
             <MenuItem Header="_Станок">
@@ -123,10 +93,6 @@
                 <MenuItem Header="Подогнать камеру" Click="ZoomExtents_Click" InputGestureText="F"/>
             </MenuItem>
             <MenuItem Header="_Настройки">
-                <MenuItem x:Name="MenuGpuVerificationItem" Header="GPU — верификация всей УП"
-                          IsCheckable="True" IsChecked="True"
-                          Checked="MenuGpuVerificationItem_CheckedChanged"
-                          Unchecked="MenuGpuVerificationItem_CheckedChanged"/>
                 <MenuItem Header="Параметры симуляции">
                     <MenuItem.HeaderTemplate>
                         <DataTemplate>
@@ -158,7 +124,7 @@
             </StatusBarItem>
             <Separator Background="#40FFFFFF"/>
             <StatusBarItem>
-                <TextBlock x:Name="VoxelResolutionStatusText" Text="Воксели: Среднее (0.30 мм)" Margin="4,0" FontSize="11" Foreground="#FFCDE8FF"/>
+                <TextBlock x:Name="VoxelResolutionStatusText" Text="Воксели: адаптивные (вкл.)" Margin="4,0" FontSize="11" Foreground="#FFCDE8FF"/>
             </StatusBarItem>
             <Separator Background="#40FFFFFF"/>
             <StatusBarItem HorizontalContentAlignment="Stretch">
@@ -182,6 +148,31 @@
                                 ShowCoordinateSystem="True">
                 <hx:DefaultLights/>
             </hx:HelixViewport3D>
+
+            <!-- Cycle Start / Stop (верхний левый угол viewport) -->
+            <Border Grid.Column="0"
+                    Panel.ZIndex="45"
+                    VerticalAlignment="Top"
+                    HorizontalAlignment="Left"
+                    Margin="10,10,0,0"
+                    Padding="6,6"
+                    Background="#99000000"
+                    BorderBrush="#66FFFFFF"
+                    BorderThickness="1"
+                    CornerRadius="6">
+                <StackPanel Orientation="Horizontal">
+                    <Button Style="{StaticResource ViewportCycleStartButton}"
+                            Content="▶"
+                            ToolTip="Cycle Start"
+                            Click="ViewportCycleStart_Click"/>
+                    <Button Style="{StaticResource ViewportCycleStopButton}"
+                            Content="■"
+                            Margin="6,0,0,0"
+                            ToolTip="Cycle Stop"
+                            Click="ViewportCycleStop_Click"/>
+                </StackPanel>
+            </Border>
+
 
             <!-- Left-side scene filters (Fanuc style, no panel background) -->
             <StackPanel Grid.Column="0"
@@ -237,6 +228,19 @@
                                 <Path Style="{StaticResource SceneFilterIconStroke}" Data="M12,3 L12,14"/>
                                 <Path Style="{StaticResource SceneFilterIconStroke}" Data="M9,14 L15,14 L13,21 L11,21 Z"/>
                                 <Path Style="{StaticResource SceneFilterIconStroke}" Data="M10,16 L14,16"/>
+                            </Canvas>
+                        </Viewbox>
+                    </ToggleButton>
+
+                    <!-- Adaptive LOD proximity cylinder -->
+                    <ToggleButton x:Name="FilterShowAdaptiveProximity" Style="{StaticResource SceneFilterIconToggle}" IsChecked="False"
+                                  Checked="SceneFilter_Changed" Unchecked="SceneFilter_Changed"
+                                  ToolTip="Зона адаптивной точности (цилиндр +20%)">
+                        <Viewbox Width="22" Height="22">
+                            <Canvas Width="24" Height="24">
+                                <Path Style="{StaticResource SceneFilterIconStroke}" Data="M7,7 A5,2 0 1,0 17,7"/>
+                                <Path Style="{StaticResource SceneFilterIconStroke}" Data="M7,17 A5,2 0 1,0 17,17"/>
+                                <Path Style="{StaticResource SceneFilterIconStroke}" Data="M7,7 L7,17 M17,7 L17,17"/>
                             </Canvas>
                         </Viewbox>
                     </ToggleButton>
@@ -409,20 +413,40 @@
                 </Border>
             </Canvas>
 
-            <!-- FPS Counter (Top Right) -->
-            <Border Grid.Column="0" 
-                    VerticalAlignment="Top" 
-                    HorizontalAlignment="Right" 
-                    Margin="10" 
-                    Padding="8,4"
-                    Background="#80000000" 
-                    CornerRadius="4"
-                    IsHitTestVisible="False">
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="FPS: " Foreground="White" FontSize="12"/>
-                    <TextBlock x:Name="FpsText" Text="0" Foreground="Lime" FontSize="12" FontWeight="Bold"/>
-                </StackPanel>
-            </Border>
+            <!-- FPS + Stock stats (Top Right) -->
+            <StackPanel Grid.Column="0"
+                        VerticalAlignment="Top"
+                        HorizontalAlignment="Right"
+                        Margin="10"
+                        IsHitTestVisible="False">
+                <Border Padding="8,4"
+                        Background="#80000000"
+                        CornerRadius="4"
+                        Margin="0,0,0,6">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="FPS: " Foreground="White" FontSize="12"/>
+                            <TextBlock x:Name="FpsText" Text="0" Foreground="Lime" FontSize="12" FontWeight="Bold"/>
+                        </StackPanel>
+                        <TextBlock x:Name="ChunkStatsText" Text="Cut: - | Render: -" Foreground="#CCFFFFFF" FontSize="11" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Border>
+                <Border x:Name="StockStatsPanel"
+                        Padding="10,6"
+                        Background="#B0101010"
+                        BorderBrush="#66FFFFFF"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        Visibility="Collapsed">
+                    <StackPanel MinWidth="180">
+                        <TextBlock Text="Заготовка" Foreground="White" FontSize="12" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <TextBlock x:Name="StockStatsSizeText" Text="Размер: —" Foreground="#E6FFFFFF" FontSize="11"/>
+                        <TextBlock x:Name="StockStatsBricksText" Text="Кирпичи: —" Foreground="#E6FFFFFF" FontSize="11" Margin="0,2,0,0"/>
+                        <TextBlock x:Name="StockStatsVoxelsText" Text="Воксели: —" Foreground="#E6FFFFFF" FontSize="11" Margin="0,2,0,0"/>
+                        <TextBlock x:Name="StockStatsPrecisionText" Text="Точность: —" Foreground="#E6FFFFFF" FontSize="11" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
 
             <!-- Overlay Panel (Bottom Left) -->
             <Border Grid.Column="0" 
@@ -442,7 +466,7 @@
                     <TextBlock x:Name="FeedStatusText" Text="F: 0 мм/мин" Foreground="White" FontSize="14" Margin="0,2"/>
                     <TextBlock x:Name="SpindleStatusText" Text="S: 0 об/мин (M5)" Foreground="White" FontSize="14" Margin="0,2"/>
                     <TextBlock x:Name="CoolantText" Text="СОЖ: ВЫКЛ" Foreground="White" FontSize="14" Margin="0,2"/>
-                    <TextBlock x:Name="ResolutionStatusText" Text="Точность: 1.0 мм" Foreground="White" FontSize="14" Margin="0,2"/>
+                    <TextBlock x:Name="ResolutionStatusText" Text="Воксели: адаптивные (вкл.)" Foreground="White" FontSize="14" Margin="0,2"/>
                 </StackPanel>
             </Border>
 

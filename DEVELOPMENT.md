@@ -8,7 +8,7 @@ Run this before and after behavior changes:
 dotnet test -c Release
 ```
 
-This restores packages, builds the WPF app, builds `CNCSS.GpuVerification`, and runs the xUnit suite.
+This restores packages, builds the WPF app, and runs the xUnit suite.
 
 ## Local Run
 

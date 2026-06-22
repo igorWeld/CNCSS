@@ -37,14 +37,15 @@ G-code файл
   → Vis/* (3D: станок, траектория, заготовка, WCS)
 ```
 
-| Слой | Папка | Ответственность |
-|------|-------|-----------------|
-| UI | `UI/` | FANUC-панель, диалоги, ViewModels, презентеры |
-| Визуализация | `Vis/` | Helix, `MachineVisualCoordinator`, `VoxelStock`, маркеры |
-| Машина | `Machine/` | Профили, кинематика, WCS, крепление заготовки |
-| Данные | `Data/` | `MachineState`, парсер, воксельные чанки |
-| Симуляция | `Simulation/` | Шина, исполнение УП, цикл |
-| GPU | `CNCSS.GpuVerification/` | Опциональная верификация занятости |
+| Слой | Папка (физически) | Ответственность |
+|------|-------------------|-----------------|
+| App | корень (`MainWindow`, `App.xaml`) | Композиция и wiring |
+| UI | `src/CNCSS.Visualization/UI/` | FANUC-панель, диалоги, ViewModels, презентеры |
+| Визуализация | `src/CNCSS.Visualization/Vis/`, `Voxel/` | Helix (станок, toolpath, воксельная заготовка), маркеры |
+| Машина | `src/CNCSS.Logic/Machine/` | Профили, кинематика, WCS, крепление заготовки |
+| Данные | `src/CNCSS.Data/` | `MachineState`, конфиги, константы |
+| Симуляция | `src/CNCSS.Logic/Simulation/` | Шина, исполнение УП, цикл |
+| Логика G-code | `src/CNCSS.Logic/Logic/` | Парсер, загрузка УП |
 
 **Правило:** не раздувать `MainWindow.xaml.cs` — выносить логику в сервисы/координаторы, если затрагивается не только привязка UI.
 
@@ -54,19 +55,20 @@ G-code файл
 
 ### Заготовка
 
-1. **Параметры заготовки** задаются только через **Конструктор заготовки** (`UI/Dialogs/StockConstructorWindow.xaml`, меню *Симуляция → Заготовка → Конструктор заготовки…*).
+1. **Параметры заготовки** задаются только через **Конструктор заготовки** (`src/CNCSS.Visualization/UI/Dialogs/StockConstructorWindow.xaml`, меню *Симуляция → Заготовка → Конструктор заготовки…*).
 2. После «Подтвердить» в сцене показывается **параметрическая (невоксельная)** модель (`_stockModel` в `MainWindow`).
-3. **Воксельная заготовка** создаётся **только при Cycle Start** (`EnsureVoxelStockForRun` → `TryEnsureVoxelStock`), с **модальным окном** прогресса.
-4. При старте обработки цельная модель **заменяется** воксельной (`GetStockViewportContent()` отдаёт `_stock.MainModel`, если `_stock != null`).
+3. **Воксельная заготовка** создаётся **только при Cycle Start** (`EnsureVoxelStockForRun` → `SurfaceShellVolume` + SharpDX overlay).
+4. **Нативный CNCSS.VoxelEngineC (C) удалён** — не восстанавливать P/Invoke и `native/CNCSS.VoxelEngineC/`.
 5. **Автоподбор габаритов по контуру УП отключён** — не восстанавливать `AutoStockCheck` / подгонку по `prepared.Bounds`.
-6. Форма вокселей строится **по типу из конструктора** (прямоугольник, шестигранник, круг, труба) через маску в `StockSimulationCoordinator.BuildOccupancyMask`.
-7. После конструктора обязательны: `ApplyStock()`, `SyncStockVisualToTable()`, `SetStockDisplayVisible(true)`.
+6. Форма вокселей строится **по типу из конструктора** через `ShapeMaskBuilder`; хранение — **surface shell** (`Logic/Voxel/SurfaceShell/`: bitmap + sparse surface index, 0.1 мм).
+7. После Cycle Start viewport переключается на **SharpDX instancing** (`SharpDxStockViewportHost` overlay поверх `HelixViewport3D`).
+8. После конструктора обязательны: `ApplyStock()`, `SyncStockVisualToTable()`, `SetStockDisplayVisible(true)`.
 
 ### Видимость в 3D
 
 | Переключатель | Назначение |
 |---------------|------------|
-| `FilterShowStock` | Показать/скрыть заготовку (только визуал, не расчёт вокселей) |
+| `FilterShowStock` | Показать/скрыть заготовку (SharpDX surface shell или параметрическая модель на Helix) |
 | `FilterShowMachine` | Видимость узлов станка; **не** должен влиять на видимость заготовки |
 | `FilterShowToolpath` / `FilterShowTool` | Траектория и инструмент |
 
@@ -78,7 +80,7 @@ G-code файл
 
 ### WCS-маркер
 
-`Vis/WcsMarkerVisualBuilder.cs`: полупрозрачная **белая сфера** (80% прозрачности), оси X/Y/Z (красный/зелёный/синий), подпись G54–G59. **Без текстуры** на сфере.
+`src/CNCSS.Visualization/Vis/WcsMarkerVisualBuilder.cs`: полупрозрачная **белая сфера** (80% прозрачности), оси X/Y/Z (красный/зелёный/синий), подпись G54–G59. **Без текстуры** на сфере.
 
 ---
 
@@ -87,22 +89,22 @@ G-code файл
 | Задача | Файлы |
 |--------|--------|
 | Загрузка УП | `ProgramLoadOrchestrator`, `MainPresenter.LoadProgram`, `ProgramLoadPipeline` |
-| Конструктор заготовки | `UI/Dialogs/StockConstructorWindow.xaml`, `UI/ViewModels/StockConstructorViewModel.cs`, `Data/StockConstructorConfig.cs`, `Vis/StockConstructorPreviewBuilder.cs` |
-| Жизненный цикл заготовки | `Vis/StockLifecycleCoordinator.cs`, `MainWindow`: `ApplyStockConstructor`, `ApplyStock`, `EnsureVoxelStockForRun` |
-| Воксели при пуске | `StockSimulationCoordinator.CreateRuntime(resolutionMm, …)`, `Vis/VoxelStock.cs` |
+| Конструктор заготовки | `src/CNCSS.Visualization/UI/Dialogs/StockConstructorWindow.xaml`, `StockConstructorViewModel.cs`, `src/CNCSS.Data/StockConstructorConfig.cs`, `StockConstructorPreviewBuilder.cs` |
+| Жизненный цикл заготовки | `StockLifecycleCoordinator.cs`, `MainWindow`: `ApplyStockConstructor`, `ApplyStock`, `EnsureVoxelStockForRun` |
+| Воксели при пуске | `StockSimulationCoordinator`, `VoxelStockVolume`, `SurfaceShellVolume`, `SharpDxStockViewportHost` |
 | Разрешение вокселей | Меню *Симуляция → Разрешение вокселей* → `StockLifecycleCoordinator.VoxelResolutionMm` |
 | Навигация по УП | `UI/Hosts/ProgramLineNavigator` (без скрытого ListBox) |
-| 3D станок | `Vis/MachineVisualCoordinator.cs`, `UI/Dialogs/MachineSetupWindow.xaml` |
+| 3D станок | `MachineVisualCoordinator.cs`, `MachineSetupWindow.xaml` |
 | Стили FANUC | `UI/Themes/FanucPanelResources.xaml` |
-| Инструменты | `UI/Dialogs/ToolSettingsWindow.xaml` |
-| Цикл УП | `Simulation/Execution/CycleCoordinator.cs`, `UI/Hosts/ProgramPlaybackHost.cs` |
-| WCS / смещения | `Machine/Model/WorkpieceMountPlacement.cs`, `Vis/WcsMarkerVisualBuilder.cs` |
+| Инструменты | `ToolSettingsWindow.xaml` |
+| Цикл УП | `src/CNCSS.Logic/Simulation/Execution/CycleCoordinator.cs`, `ProgramPlaybackHost.cs` |
+| WCS / смещения | `src/CNCSS.Logic/Machine/Model/WorkpieceMountPlacement.cs`, `WcsMarkerVisualBuilder.cs` |
 
 ---
 
 ## UI и стили
 
-- Общий словарь: `UI/Themes/FanucPanelResources.xaml` (`FanucBezelOuter`, `FanucPanelButton`, `FanucConfirmButton`, `FanucToolFieldTextBox`, …).
+- Общий словарь: `src/CNCSS.Visualization/UI/Themes/FanucPanelResources.xaml` (`FanucBezelOuter`, `FanucPanelButton`, `FanucConfirmButton`, `FanucToolFieldTextBox`, …).
 - Новые диалоги оформлять как `MachineSetupWindow` / `ToolSettingsWindow` / `StockConstructorWindow`: серый фон `#FFB0B0B0`, двойная рамка bezel, Consolas в полях.
 - Цвет инструмента/заготовки: `ToolPaletteSwatches`, `ToolColorPickerInterop` (WinForms color dialog — глобальные using WinForms отключены в csproj).
 
@@ -126,8 +128,10 @@ G-code файл
 3. Забыть `SyncStockVisualToTable()` после создания заготовки — модель не на столе.
 4. Строить воксельную заготовку только как bbox — использовать `StockConstructorConfig` и маску формы.
 5. Использовать `MeshBuilder.AddExtrudedGeometry` с одинаковыми start/end для шестигранника — меш пустой; строить призму явно (см. `StockConstructorPreviewBuilder.BuildHexPrism`).
-6. Блокировать UI при вокселях без модального окна — `ShowVoxelLoadingWindow` / `WarmUpStockVisualFullySync` в `EnsureVoxelStockForRun`.
+6. Блокировать UI при инициализации вокселей на Cycle Start — `SurfaceShellVolume.Create` в фоне/worker; SharpDX attach без синхронного полного mesh.
 7. Смешивать `System.Windows.Forms` и WPF типы без полной квалификации имён.
+8. Удалять пустые чанки из native map после cut — probe вернёт implicit solid («висящий» материал).
+9. Рендерить воксельную заготовку через WPF Helix mesh — только **SharpDX overlay**; Helix WPF для станка/траектории и parametric preview.
 
 ---
 
@@ -142,6 +146,7 @@ G-code файл
 
 - `README.md` — обзор для людей
 - `DEVELOPMENT.md` — smoke-сценарий, правила разработки
+- `docs/ARCHITECTURE.md` — обзор слоёв
 - `Readme.txt` — краткая шпаргалка
 
 При противоречии между устаревшим комментарием в коде и этим файлом — сверяться с актуальным поведением в `MainWindow.xaml.cs` и тестами.

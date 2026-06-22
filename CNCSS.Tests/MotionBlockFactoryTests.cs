@@ -23,6 +23,18 @@ public sealed class MotionBlockFactoryTests
     }
 
     [Fact]
+    public void FromParsedCommand_UsesModalMotionModeForCoordinateOnlyLines()
+    {
+        var parser = new GCodeParser();
+        parser.ProcessLine("G1 X10 F100", 1);
+        parser.ProcessLine("X20 F100", 2);
+
+        var modalLinear = MotionBlockFactory.FromParsedCommand(parser.Commands[1]);
+
+        Assert.Equal(MotionBlockKind.Linear, modalLinear.Kind);
+    }
+
+    [Fact]
     public void FromParsedCommand_CapturesStopAndEndMetadata()
     {
         var parser = new GCodeParser();

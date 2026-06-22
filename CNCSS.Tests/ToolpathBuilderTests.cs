@@ -94,7 +94,7 @@ public sealed class ToolpathBuilderTests
     }
 
     [Fact]
-    public void BuildWithLineNumbers_TableMounted_PathStartsFromWcsOrigin()
+    public void BuildWithLineNumbers_TableMounted_PathUsesWcsRelativeProgramCoords()
     {
         WorkpieceMountPlacement.ClearWcsOriginTableLocalCache();
         var def = MachineDefinition.CreateDefault();
@@ -109,13 +109,10 @@ public sealed class ToolpathBuilderTests
         var segments = ToolpathBuilder.BuildWithLineNumbers(parser, seed, def);
         Assert.NotEmpty(segments);
         Point3D atProgram = segments[0].Segment.Points[^1];
-        (double refX, double refY, double refZ) = WorkpieceMountPlacement.GetProgramZeroPhysical(parser.State);
-        Point3D wcsOrigin = WorkpieceMountPlacement.GetWcsOriginTableRoot(
-            def, parser.State, refX, refY, refZ);
 
-        Assert.Equal(wcsOrigin.X, atProgram.X, 3);
-        Assert.Equal(wcsOrigin.Y, atProgram.Y, 3);
-        Assert.Equal(wcsOrigin.Z + 10, atProgram.Z, 3);
+        Assert.Equal(0, atProgram.X, 3);
+        Assert.Equal(0, atProgram.Y, 3);
+        Assert.Equal(10, atProgram.Z, 3);
     }
 
     [Fact]
@@ -134,12 +131,9 @@ public sealed class ToolpathBuilderTests
         parser.ProcessLine("G1 X25 Y15 Z0", 2);
 
         var segments = ToolpathBuilder.BuildWithLineNumbers(parser, seed, def);
-        (double refX, double refY, double refZ) = WorkpieceMountPlacement.GetProgramZeroPhysical(parser.State);
-        Point3D wcsOrigin = WorkpieceMountPlacement.GetWcsOriginTableRoot(
-            def, parser.State, refX, refY, refZ);
         Point3D end = segments[^1].Segment.Points[^1];
 
-        Assert.Equal(wcsOrigin.X + 25, end.X, 2);
-        Assert.Equal(wcsOrigin.Y + 15, end.Y, 2);
+        Assert.Equal(25, end.X, 2);
+        Assert.Equal(15, end.Y, 2);
     }
 }

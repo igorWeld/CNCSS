@@ -1,0 +1,78 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+
+    <TargetFramework>net8.0-windows</TargetFramework>
+
+    <UseWPF>true</UseWPF>
+
+    <UseWindowsForms>true</UseWindowsForms>
+
+    <RootNamespace>CNCSS.Visualization</RootNamespace>
+
+    <AssemblyName>CNCSS.Visualization</AssemblyName>
+
+  </PropertyGroup>
+
+  <ItemGroup>
+
+    <PackageReference Include="AssimpNet" Version="5.0.0-beta1" />
+
+    <PackageReference Include="HelixToolkit.Wpf" Version="2.25.0" />
+    <PackageReference Include="HelixToolkit.Wpf.SharpDX" Version="2.25.0" />
+
+    <PackageReference Include="Occt.NET" Version="7.9.0" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CNCSS.Logic\CNCSS.Logic.csproj" />
+
+    <ProjectReference Include="..\CNCSS.Data\CNCSS.Data.csproj" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+
+    <InternalsVisibleTo Include="CNCSS.Visualization.Tests" />
+
+    <InternalsVisibleTo Include="CNCSS.Tests" />
+
+    <InternalsVisibleTo Include="CNCSS.Integration.Tests" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+
+    <Using Remove="System.Windows.Forms" />
+
+    <Using Remove="System.Drawing" />
+
+  </ItemGroup>
+
+  <Target Name="RemoveDuplicateOcctFromOutputRoot" AfterTargets="CopyOcctInteropFiles">
+
+    <PropertyGroup>
+
+      <_OcctNativeDir>$(TargetDir)occt\x64</_OcctNativeDir>
+
+    </PropertyGroup>
+
+    <Delete Files="$(TargetDir)Occt.NET.dll" Condition="Exists('$(_OcctNativeDir)\Occt.NET.dll')" />
+
+    <Delete Files="$(TargetDir)Ijwhost.dll" Condition="Exists('$(_OcctNativeDir)\Ijwhost.dll')" />
+
+  </Target>
+
+  <Target Name="RemoveBrokenOcctConfigurationSource" BeforeTargets="CoreCompile">
+
+    <ItemGroup>
+
+      <Compile Remove="@(Compile)" Condition="$([System.String]::Copy('%(FullPath)').Contains('OcctConfiguration.cs'))" />
+
+    </ItemGroup>
+
+  </Target>
+
+</Project>
+

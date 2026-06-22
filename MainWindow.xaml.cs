@@ -18,12 +18,14 @@ using Microsoft.Win32;
 using System.Windows.Controls.Primitives;
 using CNCSS.Infrastructure.Composition;
 using CNCSS.Logic;
+using CNCSS.Logic.Voxel;
 using CNCSS.Logic.ProgramLoading;
 using CNCSS.Logic.NcPrograms;
 using CNCSS.Vis;
-using CNCSS.Vis.Configuration;
 using CNCSS.Data;
+using CNCSS.Data.Config;
 using CNCSS.Data.Tools;
+using CNCSS.UI;
 using CNCSS.UI.ViewModels;
 using CNCSS.Controller.Core;
 using CNCSS.Machine.Configuration;
@@ -37,7 +39,6 @@ using CNCSS.UI.Dialogs;
 using CNCSS.UI.Presenters;
 using CNCSS.UI.Configuration;
 using System.Diagnostics;
-using CNCSS.GpuVerification;
 using CNCSS.UI.Views;
 
 namespace CNCSS
@@ -61,7 +62,6 @@ namespace CNCSS
         private System.Windows.Threading.DispatcherTimer _animationTimer;
         private Point3D _lastPosition = new Point3D(0, 0, 0);
         private double _interpolationProgress = 1.0;
-        private readonly SemaphoreSlim _stockMeshGate = new(1, 1);
 
         private readonly StockLifecycleCoordinator _stockLifecycle;
         private readonly ProgramLineNavigator _programLine = new();
@@ -75,6 +75,7 @@ namespace CNCSS
         private readonly ModelVisual3D _toolpathRoot = new();
         private Matrix3D _stockTableToWorld = Matrix3D.Identity;
         private readonly GeometryModel3D _stockModel = new();
+        private readonly Model3DGroup _stockDisplayRoot = new();
 
         // Визуализация инструмента
         private ModelVisual3D _toolVisual = new();
@@ -88,6 +89,13 @@ namespace CNCSS
         private bool _filterShowTool = true;
         private bool _filterShowToolpath = true;
         private bool _filterShowMachine = true;
+        private bool _filterShowAdaptiveProximity;
+        private readonly ModelVisual3D _adaptiveProximityVisual = new();
+        private readonly GeometryModel3D _adaptiveProximityModel = new();
+        private readonly TranslateTransform3D _adaptiveProximityTransform = new();
+        private ToolViewModel? _cachedAdaptiveProximityTool;
+        private (double Diameter, double OverallLength) _cachedAdaptiveProximityKey;
+        private bool _hasCachedAdaptiveProximityGeometry;
         private readonly ISimulationBus _simulationBus;
         private readonly IControllerCore _controllerCore;
         private readonly IMachineCore _machineCore;
@@ -105,25 +113,17 @@ namespace CNCSS
         private readonly ProgramExecutionService _programExecutionService;
         private readonly UiRenderService _uiRenderService;
         private readonly StockRenderService _stockRenderService;
+        private readonly SimulationLoopHost _simulationLoopHost;
         private readonly ToolpathRenderService _toolpathRenderService;
         private readonly MachineProfileService _machineProfileService;
         private readonly StlMeshLoader _stlMeshLoader;
         private readonly MachineVisualCoordinator _machineVisualCoordinator;
         private MachineSetupWindow? _machineSetupWindow;
-        private readonly VoxelPerformanceMonitor _voxelPerformanceMonitor = new();
         private readonly Process _selfProcess = Process.GetCurrentProcess();
-        private DateTime _stockLoadLastAtUtc;
-        private TimeSpan _stockLoadLastCpu;
-        private double _stockLoadCpuPercent;
-        private double _stockLoadGpuMemoryPercent;
-        private string _stockLoadGpuMode = "GPU ожидание";
+        private double _cutBackpressureScale = 1.0;
         private DateTime _runtimeLoadLastAtUtc = DateTime.UtcNow;
         private TimeSpan _runtimeLoadLastCpu = Process.GetCurrentProcess().TotalProcessorTime;
         private double _runtimeCpuPercent;
-        private DateTime _lastCameraDrivenStockRefreshUtc = DateTime.MinValue;
-        private bool _suppressCameraDrivenStockRefresh;
-        private int _stockMeshRefreshWorkerRunning;
-        private int _stockMeshRefreshPending;
         private readonly TranslateTransform3D _toolTransform = new();
         private ToolViewModel? _cachedToolGeometryTool;
         private (ToolType Kind, double Diameter, double ShankDiameter, double FluteLength, double OverallLength, Color FluteColor, double DrillPointAngle) _cachedToolGeometryKey;
@@ -156,14 +156,12 @@ namespace CNCSS
         private bool _suppressSelectionSideEffects;
         private int? _lastMessageToolNumber;
 
-        /// <summary>Настройки модуля GPU-верификации (persist JSON).</summary>
-        private GpuVerificationUserSettings _gpuVerificationSettings = GpuVerificationSettingsStore.Load();
-
-
         // FPS Counter fields
         private int _frameCount = 0;
         private DateTime _lastFpsUpdate = DateTime.Now;
         private double _fpsSlowdownFactor = 1.0; // Коэффициент замедления при низком FPS
+        private Model3D? _voxelDisplayRootChild;
+        private bool _lastVoxelShellDisplayed;
         private bool _isFanucDragging;
         private Point _fanucDragStart;
         private double _fanucStartLeft;
@@ -213,13 +211,14 @@ namespace CNCSS
             _mainPresenter = composition.CreateMainPresenter(this);
             _uiRenderService = composition.UiRenderService;
             _stockRenderService = composition.StockRenderService;
+            _simulationLoopHost = new SimulationLoopHost(_stockRenderService);
             _toolpathRenderService = composition.ToolpathRenderService;
             _machineProfileService = composition.MachineProfileService;
             _stlMeshLoader = composition.StlMeshLoader;
             _machineVisualCoordinator = composition.MachineVisualCoordinator;
             FanucPanel.ProgramCatalogService = _ncProgramCatalogService;
             _machineProfileService.ActiveProfileChanged += _ =>
-                Dispatcher.InvokeAsync(() => ApplyActiveMachineProfileAsync());
+                Dispatcher.InvokeAsync(() => ApplyActiveMachineProfileAsync(moveAxesToProfileHome: false));
             _machineStateSubscription = _simulationBus.Subscribe<MachineStateChangedEvent>(OnMachineStateChanged);
             _alarmSubscription = _simulationBus.Subscribe<AlarmRaisedEvent>(OnAlarmRaised);
             _mdiModeSubscription = _simulationBus.Subscribe<MdiModeChangedEvent>(OnMdiModeChanged);
@@ -262,12 +261,12 @@ namespace CNCSS
             _fanucClockTimer.Start();
 
             InitToolVisual();
-            
+            InitAdaptiveProximityVisual();
+
             _stockModel.Material = MaterialHelper.CreateMaterial(Colors.LightGray);
             _stockModel.BackMaterial = _stockModel.Material;
             _stockVisual.Content = _stockModel;
             Viewport.Children.Add(_stockVisual);
-            Viewport.Children.Add(_toolpathRoot);
             _programPlaybackHost.ResetToHome();
             RefreshDiagnosticsPanel();
             FanucPanel.UpdateStatusClock(DateTime.Now);
@@ -1165,6 +1164,10 @@ namespace CNCSS
 
         private void MenuCycleStart_Click(object sender, RoutedEventArgs e) => OnFanucCycleStartRequested();
         private void MenuFeedHold_Click(object sender, RoutedEventArgs e) => OnFanucFeedHoldRequested();
+
+        private void ViewportCycleStart_Click(object sender, RoutedEventArgs e) => OnFanucCycleStartRequested();
+
+        private void ViewportCycleStop_Click(object sender, RoutedEventArgs e) => OnFanucFeedHoldRequested();
         private void MenuResetStop_Click(object sender, RoutedEventArgs e) => OnFanucResetRequested();
 
         private void MenuProgramDialog_Click(object sender, RoutedEventArgs e)
@@ -1294,16 +1297,6 @@ namespace CNCSS
                 .ToList();
         }
 
-        private void MenuStockWcsZero_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is not MenuItem { Tag: string tag } || !TryParseStockWcsZeroTag(tag, out StockWorkOriginXY xy, out StockWorkOriginZ z))
-            {
-                return;
-            }
-
-            ApplyWorkOffsetFromStock(xy, z);
-        }
-
         private void MenuQuickMeasureTool_Click(object sender, RoutedEventArgs e)
         {
             if (_tools.Count == 0)
@@ -1415,7 +1408,7 @@ namespace CNCSS
                 MessageBox.Show(
                     this,
                     "Сначала задайте заготовку (меню «Симуляция → Конструктор заготовки…»).",
-                    "Нулевая точка детали",
+                    "Установить ноль",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
                 return;
@@ -1438,71 +1431,6 @@ namespace CNCSS
                 StatusText.Text =
                     $"WCS G{r.SystemNumber} (MCS): X={originMcs.X:F3} Y={originMcs.Y:F3} Z={originMcs.Z:F3}";
             }
-        }
-
-        private static bool TryParseStockWcsZeroTag(string tag, out StockWorkOriginXY xy, out StockWorkOriginZ z)
-        {
-            xy = StockWorkOriginXY.Center;
-            z = StockWorkOriginZ.Top;
-            string[] parts = tag.Split(',', StringSplitOptions.TrimEntries);
-            if (parts.Length != 2)
-            {
-                return false;
-            }
-
-            xy = parts[0] switch
-            {
-                "Center" => StockWorkOriginXY.Center,
-                "MinMin" => StockWorkOriginXY.CornerMinXMinY,
-                "MaxMin" => StockWorkOriginXY.CornerMaxXMinY,
-                "MinMax" => StockWorkOriginXY.CornerMinXMaxY,
-                "MaxMax" => StockWorkOriginXY.CornerMaxXMaxY,
-                _ => StockWorkOriginXY.Center
-            };
-
-            z = parts[1] switch
-            {
-                "Top" => StockWorkOriginZ.Top,
-                "Bottom" => StockWorkOriginZ.Bottom,
-                _ => StockWorkOriginZ.Top
-            };
-
-            return true;
-        }
-
-        private void ApplyWorkOffsetFromStock(StockWorkOriginXY xy, StockWorkOriginZ z)
-        {
-            if (!TryGetStockMachineBounds(out WorkpiecePlacement.StockBounds bounds))
-            {
-                MessageBox.Show(
-                    this,
-                    "Сначала задайте заготовку (меню «Симуляция → Конструктор заготовки…»).",
-                    "Нулевая точка детали",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-                return;
-            }
-
-            MachineGeometryPoint originOnStock = StockWorkOrigin.Compute(bounds, xy, z);
-            int system = _selectedOffsetSystem;
-            WorkpieceMountPlacement.RegisterWcsOriginTableLocal(
-                system,
-                new Point3D(originOnStock.X, originOnStock.Y, originOnStock.Z));
-            MachineGeometryPoint originMcs = StockBoundsPointToWcsOffsetMcs(originOnStock);
-            ApplyWorkOffsetDirect(system, originMcs.X, originMcs.Y, originMcs.Z);
-
-            string xyLabel = xy switch
-            {
-                StockWorkOriginXY.Center => "центр XY",
-                StockWorkOriginXY.CornerMinXMinY => "угол Min X, Min Y",
-                StockWorkOriginXY.CornerMaxXMinY => "угол Max X, Min Y",
-                StockWorkOriginXY.CornerMinXMaxY => "угол Min X, Max Y",
-                StockWorkOriginXY.CornerMaxXMaxY => "угол Max X, Max Y",
-                _ => "центр XY"
-            };
-            string zLabel = z == StockWorkOriginZ.Top ? "верх Z" : "низ Z";
-            StatusText.Text =
-                $"WCS G{system} (MCS): X={originMcs.X:F3} Y={originMcs.Y:F3} Z={originMcs.Z:F3} ({xyLabel}, {zLabel})";
         }
 
         private void ApplyWorkOffsetDirect(int systemNumber, double x, double y, double z)
@@ -1564,20 +1492,19 @@ namespace CNCSS
         }
 
         /// <summary>
-        /// Применяет результат конструктора: параметрический меш на столе, цвет и габариты;
-        /// воксельный runtime откладывается до Cycle Start (<see cref="_stockLifecycle.DeferVoxelUntilRun"/>).
+        /// Применяет результат конструктора: параметрическая заготовка на Helix; воксели — в фоне.
         /// </summary>
         private void ApplyStockConstructor(StockConstructorConfig cfg)
         {
             _stockLifecycle.ConstructorConfig = cfg;
-
             _stockLifecycle.DeferVoxelUntilRun = true;
             SetStockDisplayVisible(true);
 
-            _stockLifecycle.VoxelResolutionMm = cfg.VerificationResolutionMm;
+            _stockLifecycle.VoxelResolutionMm = VoxelConstants.VoxelResolutionMm;
+            _stockLifecycle.AdaptiveDisplayGridMm = VoxelConstants.DisplayGridDefaultMm;
             UpdateResButtons();
 
-            SetStockColorFromWpfColor(cfg.Color);
+            SetStockColorFromWpfColor(cfg.Color.ToWpfColor());
 
             if (!TryBuildStockBoundsTableLocal(cfg, out WorkpiecePlacement.StockBounds bounds))
             {
@@ -1590,13 +1517,65 @@ namespace CNCSS
             _stockLifecycle.AutoAlignToMount = false;
             _stockLifecycle.Bounds = bounds;
 
-            ApplyStock();
+            ReleaseVoxelStockRuntime();
+            _stockModel.Geometry = _stockLifecycle.BuildParametricMesh(bounds);
+            _stockModel.Material = MaterialHelper.CreateMaterial(cfg.Color.ToWpfColor());
+            _stockModel.BackMaterial = _stockModel.Material;
+
             SyncStockVisualToTable();
+            ApplyStockViewportVisibility(triggerMeshRefresh: false);
+            BeginBackgroundVoxelRuntimePrep(cfg.Color.ToWpfColor());
         }
+
+        private CancellationTokenSource? _voxelPrepCts;
+
+        /// <summary>Фоновая подготовка bitmap/surface после конструктора (без модального окна).</summary>
+        private void BeginBackgroundVoxelRuntimePrep(Color surfaceColor)
+        {
+            _voxelPrepCts?.Cancel();
+            _voxelPrepCts?.Dispose();
+            _voxelPrepCts = new CancellationTokenSource();
+            CancellationToken token = _voxelPrepCts.Token;
+
+            Task.Run(() =>
+            {
+                if (token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                bool ok = _stockLifecycle.TryEnsureVoxelRuntime(false, surfaceColor, PumpUiForLoadingOverlay);
+                if (token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (token.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    if (!ok)
+                    {
+                        StatusText.Text = "Не удалось подготовить воксельную заготовку";
+                        return;
+                    }
+
+                    _stockLifecycle.DeferVoxelShellUntilApproach = true;
+                    _stockLifecycle.DeferVoxelUntilRun = false;
+                    StatusText.Text = "Воксельная заготовка готова";
+                    UpdateStockStatsOverlay();
+                });
+            }, token);
+        }
+
+        private bool ShouldShowD3dStockOverlay() => false;
 
         private bool IsStockShownInViewport() => FilterShowStock?.IsChecked == true;
 
-        /// <summary>Показать/скрыть заготовку в 3D (не влияет на расчёт вокселей при Cycle Start).</summary>
+        /// <summary>Показать/скрыть заготовку в 3D (только визуал, не пересоздаёт воксели).</summary>
         private void SetStockDisplayVisible(bool visible)
         {
             if (_syncingStockDisplay)
@@ -1685,20 +1664,125 @@ namespace CNCSS
             }
         }
 
-        /// <summary>Освобождает воксельный runtime, worker и GPU-сессию заготовки.</summary>
+        /// <summary>Синхронизирует отображение воксельной или параметрической заготовки.</summary>
+        private void RefreshVoxelStockDisplay(VoxelStockVolume stock, bool scheduleCutRebuild = false)
+        {
+            _ = scheduleCutRebuild;
+            if (_stockVisual == null || !IsStockShownInViewport())
+            {
+                return;
+            }
+
+            bool useVoxel = stock.UseVoxelForDisplay;
+            if (useVoxel)
+            {
+                bool showUnderlay = stock.ShowParametricUnderlay;
+                bool needsRefresh = _stockDisplayRoot.Children.Count == 0;
+                if (showUnderlay)
+                {
+                    needsRefresh = needsRefresh
+                        || _stockDisplayRoot.Children.Count != 2
+                        || !ReferenceEquals(_stockDisplayRoot.Children[0], _stockModel)
+                        || !ReferenceEquals(_stockDisplayRoot.Children[1], stock.MainModel);
+                }
+                else
+                {
+                    needsRefresh = needsRefresh
+                        || _stockDisplayRoot.Children.Count != 1
+                        || !ReferenceEquals(_stockDisplayRoot.Children[0], stock.MainModel);
+                }
+
+                if (needsRefresh)
+                {
+                    _stockDisplayRoot.Children.Clear();
+                    if (showUnderlay)
+                    {
+                        _stockDisplayRoot.Children.Add(_stockModel);
+                    }
+
+                    _stockDisplayRoot.Children.Add(stock.MainModel);
+                }
+            }
+            else
+            {
+                if (_stockDisplayRoot.Children.Count != 1 || !ReferenceEquals(_stockDisplayRoot.Children[0], _stockModel))
+                {
+                    _stockDisplayRoot.Children.Clear();
+                    _stockDisplayRoot.Children.Add(_stockModel);
+                }
+            }
+
+            if (_stockVisual.Content != _stockDisplayRoot)
+            {
+                _stockVisual.Content = _stockDisplayRoot;
+            }
+
+            _voxelDisplayRootChild = useVoxel ? stock.MainModel : _stockModel;
+            _lastVoxelShellDisplayed = useVoxel;
+            UpdateResButtons();
+            UpdateStockStatsOverlay();
+        }
+
+        /// <summary>Прогрев оболочки при подводе инструмента.</summary>
+        private void TryBeginVoxelShellOnApproach(Point3D toolStockLocal)
+        {
+            if (_stockLifecycle.Stock is not VoxelStockVolume stock || stock.ShellDisplayed)
+            {
+                return;
+            }
+
+            if (_stockLifecycle.Bounds is not WorkpiecePlacement.StockBounds bounds)
+            {
+                return;
+            }
+
+            var volume = StockLifecycleCoordinator.ToVolumeConfig(bounds);
+            double dist = StockApproachHelper.DistancePointToBoundsMm(
+                toolStockLocal.X, toolStockLocal.Y, toolStockLocal.Z, volume);
+            if (dist > VoxelConstants.VoxelWarmupApproachDistanceMm)
+            {
+                return;
+            }
+
+            stock.ActivateShellDisplay();
+            stock.BeginDisplayWarmup();
+            RefreshVoxelStockDisplay(stock);
+        }
+
+        /// <summary>Завершает отложенный прогрев оболочки.</summary>
+        private bool TryCompleteDeferredVoxelShell(VoxelStockVolume stock)
+        {
+            if (stock.ShellDisplayed)
+            {
+                return true;
+            }
+
+            if (_stockLifecycle.DeferVoxelShellUntilApproach)
+            {
+                return false;
+            }
+
+            stock.ActivateShellDisplay();
+            RefreshVoxelStockDisplay(stock);
+            return stock.ShellDisplayed;
+        }
+
+        /// <summary>Освобождает воксельный runtime и worker заготовки.</summary>
         private void ReleaseVoxelStockRuntime()
         {
-            Interlocked.Exchange(ref _stockMeshRefreshPending, 0);
+            _voxelPrepCts?.Cancel();
             _stockLifecycle.ReleaseRuntime();
+            _voxelDisplayRootChild = null;
+            _lastVoxelShellDisplayed = false;
             if (_stockVisual != null)
             {
-                _stockVisual.Content = null;
+                _stockDisplayRoot.Children.Clear();
             }
         }
 
-        /// <summary>Подставляет в viewport параметрический или воксельный меш в зависимости от наличия runtime.</summary>
-        private void ApplyStockViewportVisibility()
+        private void ApplyStockViewportVisibility(bool triggerMeshRefresh = true)
         {
+            _ = triggerMeshRefresh;
             if (_stockVisual == null)
             {
                 return;
@@ -1707,6 +1791,7 @@ namespace CNCSS
             if (!IsStockShownInViewport())
             {
                 _stockVisual.Content = null;
+
                 if (ResolutionStatusText != null)
                 {
                     ResolutionStatusText.Visibility = Visibility.Collapsed;
@@ -1715,10 +1800,18 @@ namespace CNCSS
                 return;
             }
 
-            _stockVisual.Content = GetStockViewportContent();
-            if (_stockLifecycle.Stock != null)
+            if (_stockLifecycle.Stock is VoxelStockVolume voxelStock)
             {
-                _ = UpdateStockMeshAsync(meshRefreshNonBlockingGate: false);
+                if (!voxelStock.ShellDisplayed && !_stockLifecycle.DeferVoxelShellUntilApproach)
+                {
+                    voxelStock.ActivateShellDisplay();
+                }
+
+                RefreshVoxelStockDisplay(voxelStock);
+            }
+            else
+            {
+                _stockVisual.Content = _stockModel;
             }
 
             if (ResolutionStatusText != null)
@@ -1781,7 +1874,7 @@ namespace CNCSS
             {
                 SyncActiveWcsOriginMarker(activeWcs, evt.X, evt.Y, evt.Z, updateTableLocalPosition: true);
             }
-            _lastPosition = GetToolTcpPosition(evt.X, evt.Y, evt.Z);
+            SyncCutTrackingFromMachinePosition(new Point3D(evt.X, evt.Y, evt.Z));
             bool showTool = _filterShowTool && evt.ToolNumber.HasValue;
             bool mountNodeTool = UsesMountNodeToolVisual();
             _uiRenderService.SyncToolVisual(
@@ -1815,6 +1908,16 @@ namespace CNCSS
             _filterShowTool = FilterShowTool?.IsChecked == true;
             _filterShowToolpath = FilterShowToolpath?.IsChecked == true;
             _filterShowMachine = FilterShowMachine?.IsChecked == true;
+            _filterShowAdaptiveProximity = FilterShowAdaptiveProximity?.IsChecked == true;
+            if (_filterShowAdaptiveProximity && _selectedTool != null)
+            {
+                EnsureAdaptiveProximityGeometry(_selectedTool);
+            }
+            else if (!_filterShowAdaptiveProximity)
+            {
+                _adaptiveProximityModel.Geometry = null;
+            }
+
             ApplySceneFilters();
         }
 
@@ -1861,6 +1964,8 @@ namespace CNCSS
             {
                 SyncToolVisualMount(showTool: true);
             }
+
+            SyncAdaptiveProximityVisual(ShouldShowAdaptiveProximityVisual());
         }
 
         private void OnAlarmRaised(AlarmRaisedEvent evt)
@@ -2354,58 +2459,123 @@ namespace CNCSS
 
         private void OnRendering(object? sender, EventArgs e)
         {
-            if (_stockLifecycle.Stock is VoxelStock voxelStock && !_suppressCameraDrivenStockRefresh)
+            if (_wcsMarkers.Count > 0)
             {
-                // Камера может вращаться при паузе/стопе цикла: если есть грязные чанки,
-                // дотягиваем пересборку даже без движения инструмента, чтобы не было "пустот".
-                if (voxelStock.IsDirty)
-                {
-                    DateTime nowCam = DateTime.UtcNow;
-                    if ((nowCam - _lastCameraDrivenStockRefreshUtc).TotalMilliseconds >= UiLayoutConstants.CameraDrivenStockRefreshMs)
-                    {
-                        _lastCameraDrivenStockRefreshUtc = nowCam;
-                        RequestStockMeshRefresh();
-                    }
-                }
+                BringWcsMarkersToViewportFront();
             }
 
             _frameCount++;
             var now = DateTime.Now;
             var elapsed = (now - _lastFpsUpdate).TotalSeconds;
-            if (elapsed >= 0.5) // Обновляем чаще (раз в полсекунды) для более плавной реакции
+            if (elapsed >= 0.5)
             {
                 double fps = _frameCount / elapsed;
                 if (FpsText != null)
                 {
                     FpsText.Text = fps.ToString("F0");
-                    if (fps < 15) FpsText.Foreground = Brushes.Red;
-                    else if (fps < 30) FpsText.Foreground = Brushes.Orange;
+                    float minFps = VoxelConstants.ViewportMinFps;
+                    if (fps < minFps) FpsText.Foreground = Brushes.Red;
+                    else if (fps < minFps * 2) FpsText.Foreground = Brushes.Orange;
                     else FpsText.Foreground = Brushes.Lime;
                 }
 
-                // Динамическое замедление: если FPS < 45, замедляем симуляцию
-                if (fps < UiLayoutConstants.TargetFps)
+                if (ChunkStatsText != null && _stockLifecycle.Stock is VoxelStockVolume d3dHud)
                 {
-                    // Плавное снижение коэффициента (минимум 0.1)
-                    _fpsSlowdownFactor = Math.Max(0.1, fps / UiLayoutConstants.TargetFps);
+                    ChunkStatsText.Text =
+                        $"Cut: {d3dHud.LastCutMs:F1} ms | Render: {d3dHud.LastRenderMs:F1} ms | Mesh: {d3dHud.DisplayMeshCount}";
                 }
-                else
+                else if (ChunkStatsText != null)
                 {
-                    _fpsSlowdownFactor = 1.0;
+                    ChunkStatsText.Text = "Cut: - | Render: - | Mesh: -";
                 }
+
+                double playbackFpsFloor = VoxelConstants.ViewportMinFps;
+                double targetSlowdown = fps < playbackFpsFloor
+                    ? Math.Max(0.55, fps / playbackFpsFloor)
+                    : 1.0;
+                // Плавно подводим slowdown к целевому значению, чтобы скорость не "прыгала".
+                _fpsSlowdownFactor = Math.Clamp(
+                    _fpsSlowdownFactor + (targetSlowdown - _fpsSlowdownFactor) * 0.30,
+                    0.55,
+                    1.0);
 
                 _frameCount = 0;
                 _lastFpsUpdate = now;
                 UpdateRuntimeLoadStatusText();
+                UpdateStockStatsOverlay();
+            }
+        }
+
+        private static string FormatVoxelCount(long count)
+        {
+            if (count >= 1_000_000)
+            {
+                return $"{count / 1_000_000.0:F1}M";
+            }
+
+            if (count >= 1_000)
+            {
+                return $"{count / 1_000.0:F1}K";
+            }
+
+            return count.ToString();
+        }
+
+        private void UpdateStockStatsOverlay()
+        {
+            if (StockStatsPanel == null)
+            {
+                return;
+            }
+
+            if (_stockLifecycle.Stock is not VoxelStockVolume stock)
+            {
+                StockStatsPanel.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            StockVoxelDisplayStats stats = stock.GetDisplayStats();
+            StockStatsPanel.Visibility = Visibility.Visible;
+
+            if (StockStatsSizeText != null)
+            {
+                StockStatsSizeText.Text =
+                    $"Размер: {stats.SizeXmm:F0} × {stats.SizeYmm:F0} × {stats.SizeZmm:F0} мм";
+            }
+
+            if (StockStatsBricksText != null)
+            {
+                StockStatsBricksText.Text =
+                    $"Чанки: {stats.ChunkCount} | surface {stats.SurfaceVoxelCount}";
+            }
+
+            if (StockStatsVoxelsText != null)
+            {
+                StockStatsVoxelsText.Text =
+                    $"Поверхность: {FormatVoxelCount(stats.SurfaceVoxelCount)} вокселей";
+            }
+
+            if (StockStatsPrecisionText != null)
+            {
+                string mode = stats.ShellDisplayed ? "adaptive voxel" : "param";
+                StockStatsPrecisionText.Text =
+                    $"Точность: {stats.VoxelResolutionMm:F2} мм ({mode})";
             }
         }
 
         private void UpdateResButtons()
         {
-            string resName = _stockLifecycle.VoxelResolutionMm <= ProjectConstants.RES_HIGH + 1e-9 ? "Высокая" :
-                _stockLifecycle.VoxelResolutionMm <= ProjectConstants.RES_MEDIUM + 1e-9 ? "Средняя" :
-                _stockLifecycle.VoxelResolutionMm <= ProjectConstants.RES_COARSE + 1e-9 ? "Грубое" : "Пользовательское";
-            string text = $"Воксели: {resName} ({_stockLifecycle.VoxelResolutionMm:F2} мм)";
+            double simStep = _stockLifecycle.VoxelResolutionMm;
+            string text = $"Воксели: адаптивные (вкл., шаг {simStep:F2} мм)";
+            if (_stockLifecycle.Stock is VoxelStockVolume voxelStock)
+            {
+                text += voxelStock.FormatLodStatusSuffix();
+            }
+            else
+            {
+                double grid = VoxelConstants.NormalizeDisplayGridMm(_stockLifecycle.AdaptiveDisplayGridMm);
+                text += $" | grid {grid:F2} мм ({VoxelConstants.GetDisplayGridLabel(grid)})";
+            }
             if (VoxelResolutionStatusText != null)
             {
                 VoxelResolutionStatusText.Text = text;
@@ -2414,20 +2584,6 @@ namespace CNCSS
             if (ResolutionStatusText != null)
             {
                 ResolutionStatusText.Text = text;
-            }
-        }
-
-        private void MenuVoxelResolution_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is MenuItem item &&
-                double.TryParse(item.Tag?.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out double res))
-            {
-                _stockLifecycle.VoxelResolutionMm = res;
-                UpdateResButtons();
-                if (IsLoaded)
-                {
-                    ApplyStock();
-                }
             }
         }
 
@@ -2447,6 +2603,81 @@ namespace CNCSS
             SyncToolVisualMount(showTool: false);
         }
 
+        private void InitAdaptiveProximityVisual()
+        {
+            _adaptiveProximityVisual.Content = _adaptiveProximityModel;
+            _adaptiveProximityVisual.Transform = _adaptiveProximityTransform;
+        }
+
+        private bool ShouldShowAdaptiveProximityVisual() =>
+            _filterShowAdaptiveProximity && _selectedTool != null;
+
+        private void EnsureAdaptiveProximityGeometry(ToolViewModel tool)
+        {
+            if (!_filterShowAdaptiveProximity)
+            {
+                return;
+            }
+
+            var key = (tool.Diameter, tool.OverallLength);
+            if (_hasCachedAdaptiveProximityGeometry &&
+                ReferenceEquals(_cachedAdaptiveProximityTool, tool) &&
+                _cachedAdaptiveProximityKey.Equals(key))
+            {
+                return;
+            }
+
+            double toolRadius = tool.Diameter / 2.0;
+            _adaptiveProximityModel.Geometry = AdaptiveProximityVisualBuilder.BuildMesh(toolRadius, tool.OverallLength);
+            Material material = AdaptiveProximityVisualBuilder.CreateMaterial();
+            _adaptiveProximityModel.Material = material;
+            _adaptiveProximityModel.BackMaterial = material;
+
+            _cachedAdaptiveProximityTool = tool;
+            _cachedAdaptiveProximityKey = key;
+            _hasCachedAdaptiveProximityGeometry = true;
+        }
+
+        private void ClearAdaptiveProximityGeometry()
+        {
+            _adaptiveProximityModel.Geometry = null;
+            _cachedAdaptiveProximityTool = null;
+            _hasCachedAdaptiveProximityGeometry = false;
+        }
+
+        private void SyncAdaptiveProximityVisual(bool show)
+        {
+            if (!show)
+            {
+                if (UsesMountNodeToolVisual())
+                {
+                    _machineVisualCoordinator.SetMountNodeAdaptiveProximity(null);
+                }
+                else if (Viewport.Children.Contains(_adaptiveProximityVisual))
+                {
+                    Viewport.Children.Remove(_adaptiveProximityVisual);
+                }
+
+                return;
+            }
+
+            if (UsesMountNodeToolVisual())
+            {
+                RemoveVisualFromViewport(_adaptiveProximityVisual);
+                _machineVisualCoordinator.SetMountNodeAdaptiveProximity(_adaptiveProximityVisual);
+                Point3D local = _machineVisualCoordinator.GetToolHolderTranslateInMountNode();
+                _adaptiveProximityTransform.OffsetX = local.X;
+                _adaptiveProximityTransform.OffsetY = local.Y;
+                _adaptiveProximityTransform.OffsetZ = local.Z;
+                return;
+            }
+
+            if (!Viewport.Children.Contains(_adaptiveProximityVisual))
+            {
+                Viewport.Children.Add(_adaptiveProximityVisual);
+            }
+        }
+
         /// <param name="tool">Активный инструмент или null для скрытия геометрии.</param>
         /// <param name="holderPosition">Точка крепления на шпинделе (торец хвостовика, tool local Z=0).</param>
         private void UpdateToolGeometry(ToolViewModel? tool, Point3D holderPosition)
@@ -2457,10 +2688,18 @@ namespace CNCSS
                 _shankModel.Geometry = null;
                 _cachedToolGeometryTool = null;
                 _hasCachedToolGeometry = false;
+                ClearAdaptiveProximityGeometry();
+                SyncAdaptiveProximityVisual(show: false);
                 return;
             }
 
             EnsureToolGeometry(tool);
+            if (_filterShowAdaptiveProximity)
+            {
+                EnsureAdaptiveProximityGeometry(tool);
+                SyncAdaptiveProximityVisual(show: true);
+            }
+
             UpdateToolTransform(holderPosition);
         }
 
@@ -2497,6 +2736,8 @@ namespace CNCSS
         {
             _cachedToolGeometryTool = null;
             _hasCachedToolGeometry = false;
+            _cachedAdaptiveProximityTool = null;
+            _hasCachedAdaptiveProximityGeometry = false;
         }
 
         private void UpdateToolTransform(Point3D position)
@@ -2507,12 +2748,22 @@ namespace CNCSS
                 _toolTransform.OffsetX = local.X;
                 _toolTransform.OffsetY = local.Y;
                 _toolTransform.OffsetZ = local.Z;
-                return;
+            }
+            else
+            {
+                _toolTransform.OffsetX = position.X;
+                _toolTransform.OffsetY = position.Y;
+                _toolTransform.OffsetZ = position.Z;
             }
 
-            _toolTransform.OffsetX = position.X;
-            _toolTransform.OffsetY = position.Y;
-            _toolTransform.OffsetZ = position.Z;
+            SyncAdaptiveProximityTransform();
+        }
+
+        private void SyncAdaptiveProximityTransform()
+        {
+            _adaptiveProximityTransform.OffsetX = _toolTransform.OffsetX;
+            _adaptiveProximityTransform.OffsetY = _toolTransform.OffsetY;
+            _adaptiveProximityTransform.OffsetZ = _toolTransform.OffsetZ;
         }
 
         private bool UsesMountNodeToolVisual() =>
@@ -2558,6 +2809,15 @@ namespace CNCSS
             if (_selectedTool == tool)
             {
                 UpdateToolGeometry(tool, GetToolHolderPosition(GetCurrentPosition()));
+            }
+
+            if (e.PropertyName is nameof(ToolViewModel.Diameter) or nameof(ToolViewModel.OverallLength))
+            {
+                _hasCachedAdaptiveProximityGeometry = false;
+                if (_filterShowAdaptiveProximity && _selectedTool == tool)
+                {
+                    EnsureAdaptiveProximityGeometry(tool);
+                }
             }
         }
 
@@ -2664,7 +2924,7 @@ namespace CNCSS
                 _programLine.SelectedIndex,
                 state => GetPhysicalSpeed(state),
                 _simulationMultiplier,
-                _fpsSlowdownFactor);
+                _fpsSlowdownFactor * _cutBackpressureScale);
             var tick = playbackStep.LoopResult;
 
             if (tick.Action == PlaybackLoopAction.StopProgram)
@@ -2698,7 +2958,8 @@ namespace CNCSS
                 return;
             }
 
-            MachineState playbackState = _currentParser.State;
+            ParsedCommand? currentCommand = _programExecutionService.GetCurrentCommand();
+            MachineState playbackState = currentCommand?.StartState ?? _currentParser.State;
             var activeOffset = playbackState.GetActiveWorkOffset();
             PositionText.Text = FormatMcsPosition(
                 currentPos.X,
@@ -2707,7 +2968,13 @@ namespace CNCSS
                 playbackState.MachineZeroOffsetX,
                 playbackState.MachineZeroOffsetY,
                 playbackState.MachineZeroOffsetZ);
-            // FANUC: машинные оси (шпиндель), без обратной коррекции G43/G44 на длину.
+            playbackState.MachineTipToProgram(
+                currentPos.X,
+                currentPos.Y,
+                currentPos.Z,
+                out double fanucTipX,
+                out double fanucTipY,
+                out double fanucTipZ);
             FanucPanel.UpdateMachinePosition(
                 currentPos.X,
                 currentPos.Y,
@@ -2717,7 +2984,10 @@ namespace CNCSS
                 playbackState.MachineZeroOffsetZ,
                 activeOffset.X,
                 activeOffset.Y,
-                activeOffset.Z);
+                activeOffset.Z,
+                fanucTipX,
+                fanucTipY,
+                fanucTipZ);
 
             // Контур/рез — по кончику в WCS; шпиндель — по машинным осям (ниже при G43).
             Point3D tcpPos = MapPhysicalToToolpathLocal(
@@ -2735,24 +3005,32 @@ namespace CNCSS
                 UpdateToolGeometry(activeTool, GetToolHolderPosition(currentPos.X, currentPos.Y, currentPos.Z));
             }
 
-            Point3D cutFrom = ToStockLocalPoint(_lastPosition);
-            Point3D cutTo = ToStockLocalPoint(tcpPos);
-            _stockRenderService.ProcessCutStep(
+            Point3D cutFrom = ProgramPointToStockLocal(_lastPosition);
+            Point3D cutTo = ProgramPointToStockLocal(tcpPos);
+            TryBeginVoxelShellOnApproach(cutTo);
+            // Шаг playback = хорда между соседними позами интерполяции (G01 и G02/G03).
+            // Полная ArcGeometry блока здесь некорректна — native сэмплировал бы всю дугу заново.
+            CutMotionDescriptor cutMotion = CutMotionDescriptor.Linear(cutFrom, cutTo);
+            bool canRemoveMaterial = playbackStep.BlockKind is MotionBlockKind.Linear or MotionBlockKind.Arc;
+            SimulationFrameResult frameResult = _simulationLoopHost.ProcessStockCutStep(
                 _isDryRunEnabled,
                 _stockLifecycle.Stock,
-                _stockLifecycle.CutWorker,
                 activeTool,
-                cutFrom,
-                cutTo,
-                _stockLifecycle.GpuSession);
+                canRemoveMaterial,
+                cutMotion,
+                (float)tick.TimerIntervalMs);
+            _cutBackpressureScale = frameResult.PlaybackScale;
 
-            // Визуализация должна следовать за движением инструмента: после реза сразу
-            // пробуем обновить грязные чанки. Gate внутри UpdateStockMeshAsync не даст
-            // накопить параллельные пересборки.
-            if (_stockLifecycle.Stock?.IsDirty == true)
+            if (_stockLifecycle.Stock is VoxelStockVolume d3dStock)
             {
-                RequestStockMeshRefresh();
+                TryCompleteDeferredVoxelShell(d3dStock);
+
+                if (d3dStock.ShellDisplayed && !_lastVoxelShellDisplayed)
+                {
+                    RefreshVoxelStockDisplay(d3dStock);
+                }
             }
+
             _lastPosition = tcpPos;
 
             if (tick.Action == PlaybackLoopAction.PauseForSingleBlock)
@@ -2777,100 +3055,6 @@ namespace CNCSS
             _suppressSelectionSideEffects = false;
         }
 
-        private async Task UpdateStockMeshAsync(bool showProgress = false, bool meshRefreshNonBlockingGate = true)
-        {
-            IStockVolume? stock = _stockLifecycle.Stock;
-            if (stock == null)
-            {
-                return;
-            }
-
-            if (stock is VoxelStock voxelStock && Viewport?.Camera is ProjectionCamera camera)
-            {
-                // Адаптивная дорисовка под текущий ракурс: приоритетно пересобираем видимую область.
-                voxelStock.SetCameraFocus(camera.Position, camera.LookDirection);
-            }
-
-            if (meshRefreshNonBlockingGate)
-            {
-                // Пока идёт пересборка, не копим await на SemaphoreSlim — следующий кадр снова проверит ShouldRefreshStock.
-                if (!await _stockMeshGate.WaitAsync(0))
-                {
-                    return;
-                }
-            }
-            else
-            {
-                await _stockMeshGate.WaitAsync();
-            }
-
-            try
-            {
-                // Заготовку могли сбросить, пока ждали gate (смена УП, выкл. вокселей).
-                if (!ReferenceEquals(stock, _stockLifecycle.Stock))
-                {
-                    return;
-                }
-
-                var profile = VoxelSimulationProfile.ForResolution(_stockLifecycle.VoxelResolutionMm);
-                using (_voxelPerformanceMonitor.MeasureMeshRefresh(profile.Name, dirtyChunkCount: -1))
-                {
-                    await _stockRenderService.RefreshStockVisualAsync(
-                        stock,
-                        _stockVisual,
-                        StockProgressPanel,
-                        showProgress,
-                        stockShownInViewport: IsStockShownInViewport());
-
-                    if (!ReferenceEquals(stock, _stockLifecycle.Stock))
-                    {
-                        _stockVisual.Content = null;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Stock update error: {ex.Message}");
-            }
-            finally
-            {
-                _stockMeshGate.Release();
-            }
-        }
-
-        private void RequestStockMeshRefresh()
-        {
-            Interlocked.Exchange(ref _stockMeshRefreshPending, 1);
-            if (Interlocked.CompareExchange(ref _stockMeshRefreshWorkerRunning, 1, 0) != 0)
-            {
-                return;
-            }
-
-            _ = RunStockMeshRefreshWorkerAsync();
-        }
-
-        private async Task RunStockMeshRefreshWorkerAsync()
-        {
-            try
-            {
-                while (Interlocked.Exchange(ref _stockMeshRefreshPending, 0) == 1)
-                {
-                    // Внутренний воркер должен делать реальную работу, а не крутиться в busy-loop,
-                    // если gate временно занят. Поэтому здесь всегда blocking-wait.
-                    await UpdateStockMeshAsync(showProgress: false, meshRefreshNonBlockingGate: false);
-                }
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _stockMeshRefreshWorkerRunning, 0);
-                if (Interlocked.CompareExchange(ref _stockMeshRefreshPending, 0, 0) == 1 &&
-                    Interlocked.CompareExchange(ref _stockMeshRefreshWorkerRunning, 1, 0) == 0)
-                {
-                    _ = RunStockMeshRefreshWorkerAsync();
-                }
-            }
-        }
-
         private void ShowVoxelLoadingWindow(string message)
         {
             _voxelLoadingWindowDepth++;
@@ -2888,12 +3072,24 @@ namespace CNCSS
         private void PumpUiForLoadingOverlay()
         {
             var frame = new DispatcherFrame();
-            Dispatcher.BeginInvoke(DispatcherPriority.Render, new DispatcherOperationCallback(_ =>
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new DispatcherOperationCallback(_ =>
             {
                 frame.Continue = false;
                 return null;
             }), null);
             Dispatcher.PushFrame(frame);
+        }
+
+        /// <summary>Ждёт завершения фоновой задачи, прокачивая UI (без Dispatcher.Invoke с фонового потока).</summary>
+        private void WaitBackgroundTaskWithUiPump(Task task)
+        {
+            while (!task.IsCompleted)
+            {
+                PumpUiForLoadingOverlay();
+                Thread.Sleep(1);
+            }
+
+            task.GetAwaiter().GetResult();
         }
 
         private void UpdateVoxelLoadingMessage(string message)
@@ -2912,8 +3108,10 @@ namespace CNCSS
                 return;
             }
 
-            _voxelLoadingWindow?.Close();
+            LoadingWindow? loading = _voxelLoadingWindow;
             _voxelLoadingWindow = null;
+            loading?.RestoreOwner();
+            loading?.Close();
         }
 
         private bool StartAnimationCycle()
@@ -2925,11 +3123,13 @@ namespace CNCSS
                     out int normalizedLineIndex))
             {
                 SetCycleButtons(canStart: false, canPause: true);
+
                 if (_programLine.SelectedIndex != normalizedLineIndex)
                 {
                     _programLine.SelectedIndex = normalizedLineIndex;
                 }
 
+                SyncCutTrackingFromMachinePosition(_programPlaybackHost.CurrentPosition);
                 _animationTimer.Start();
                 return true;
             }
@@ -2946,6 +3146,7 @@ namespace CNCSS
 
             SetCycleButtons(canStart: true, canPause: false);
             _animationTimer.Stop();
+
             return true;
         }
 
@@ -2966,7 +3167,7 @@ namespace CNCSS
                 endProgramMCode,
                 rewindToStart,
                 rewindPosition);
-            _lastPosition = endState.CurrentPosition;
+            SyncCutTrackingFromMachinePosition(endState.CurrentPosition);
             _interpolationProgress = _programPlaybackHost.InterpolationProgress;
 
             if (endState.RewindToStart && _programLine.LineCount > 0)
@@ -2990,157 +3191,6 @@ namespace CNCSS
             RefreshDiagnosticsPanel();
         }
 
-        private async Task RebuildFinalStockAfterProgramEndAsync()
-        {
-            if (_currentParser == null || _isDryRunEnabled)
-            {
-                _stockLifecycle.Stock?.FreezeModel();
-                return;
-            }
-
-            if (!TryReadStockConfig(out StockConfig cfg))
-            {
-                _stockLifecycle.Stock?.FreezeModel();
-                return;
-            }
-
-            try
-            {
-                if (StockProgressPanel != null)
-                {
-                    StockProgressPanel.Visibility = Visibility.Visible;
-                }
-                InitializeStockLoadTelemetry(cfg);
-                int estimatedChunks = EstimateFinalStockChunkCount(cfg);
-                SetStockProgress(0, $"0 / {estimatedChunks} чанков");
-                await Dispatcher.Yield(DispatcherPriority.Render);
-
-                _cycleCanStart = false;
-                _cycleCanPause = false;
-
-                _stockLifecycle.CutWorker?.Dispose();
-                _stockLifecycle.CutWorker = null;
-                _stockLifecycle.GpuSession?.Dispose();
-                _stockLifecycle.GpuSession = null;
-
-                var toolsSnapshot = _tools.ToDictionary(t => t.Number, t => new FinalStockTool(
-                    Diameter: Math.Max(0.001, t.Diameter),
-                    FluteLength: Math.Max(FinalStockSettings.ResolutionMm, t.FluteLength),
-                    FluteColor: t.FluteColor));
-                var commandsSnapshot = _currentParser.Commands.ToArray();
-
-                var finalBuildProgress = new Progress<(int Done, int Total)>(p =>
-                {
-                    double percent = p.Total <= 0 ? 0 : p.Done * 100.0 / p.Total;
-                    SetFinalStockDisplayProgress(estimatedChunks, 0.0, 0.5, percent / 100.0);
-                });
-
-                VoxelStock finalStock = await TryBuildFinalStockAsync(
-                    cfg,
-                    commandsSnapshot,
-                    toolsSnapshot,
-                    finalBuildProgress);
-                await Dispatcher.Yield(DispatcherPriority.Render);
-
-                await _stockMeshGate.WaitAsync();
-                try
-                {
-                    _stockLifecycle.Stock = finalStock;
-                    _stockLifecycle.Bounds = ToStockBounds(cfg);
-                    ApplyStockViewportVisibility();
-
-                    await UpdateFinalStockMeshWithProgressAsync(finalStock, estimatedChunks, phaseStart: 0.5);
-                    finalStock.FreezeModel();
-                }
-                finally
-                {
-                    _stockMeshGate.Release();
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Final stock rebuild failed: {ex.Message}");
-                _stockLifecycle.Stock?.FreezeModel();
-            }
-            finally
-            {
-                if (StockLoadText != null)
-                {
-                    StockLoadText.Text = string.Empty;
-                }
-                if (StockProgressPanel != null)
-                {
-                    StockProgressPanel.Visibility = Visibility.Collapsed;
-                }
-
-                _cycleCanStart = true;
-                _cycleCanPause = false;
-            }
-        }
-
-        private sealed record FinalStockTool(double Diameter, double FluteLength, Color FluteColor);
-
-        private void SetStockProgress(double percent, string? text = null)
-        {
-            percent = Math.Clamp(percent, 0, 100);
-            if (StockProgressBar != null)
-            {
-                StockProgressBar.IsIndeterminate = true;
-                StockProgressBar.Value = percent;
-            }
-
-            if (StockProgressText != null)
-            {
-                StockProgressText.Text = text ?? $"{percent:F0}%";
-            }
-
-            UpdateStockLoadTelemetryText();
-        }
-
-        private void InitializeStockLoadTelemetry(StockConfig cfg)
-        {
-            _stockLoadLastAtUtc = DateTime.UtcNow;
-            _stockLoadLastCpu = _selfProcess.TotalProcessorTime;
-            _stockLoadCpuPercent = 0;
-            _stockLoadGpuMemoryPercent = 0;
-            _stockLoadGpuMode = "CPU";
-
-            GpuVerificationProbeResult probe = GpuVerificationEngine.Probe();
-            if (!_gpuVerificationSettings.Enabled || !probe.IsAvailable)
-            {
-                _stockLoadGpuMode = "CPU fallback";
-                return;
-            }
-
-            int dimX = Math.Max(1, (int)((cfg.MaxX - cfg.MinX) / FinalStockSettings.ResolutionMm));
-            int dimY = Math.Max(1, (int)((cfg.MaxY - cfg.MinY) / FinalStockSettings.ResolutionMm));
-            int dimZ = Math.Max(1, (int)((cfg.MaxZ - cfg.MinZ) / FinalStockSettings.ResolutionMm));
-            _stockLoadGpuMemoryPercent = GpuVerificationEngine.EstimateOccupancyMemoryLoadPercent(dimX, dimY, dimZ);
-            _stockLoadGpuMode = "GPU+CPU параллельно";
-        }
-
-        private void UpdateStockLoadTelemetryText()
-        {
-            if (StockLoadText == null)
-            {
-                return;
-            }
-
-            DateTime now = DateTime.UtcNow;
-            TimeSpan cpuNow = _selfProcess.TotalProcessorTime;
-            double elapsedMs = (now - _stockLoadLastAtUtc).TotalMilliseconds;
-            if (elapsedMs >= 200)
-            {
-                double cpuUsedMs = (cpuNow - _stockLoadLastCpu).TotalMilliseconds;
-                double cpuPercent = cpuUsedMs / (elapsedMs * Math.Max(1, Environment.ProcessorCount)) * 100.0;
-                _stockLoadCpuPercent = Math.Clamp(cpuPercent, 0.0, 100.0);
-                _stockLoadLastAtUtc = now;
-                _stockLoadLastCpu = cpuNow;
-            }
-
-            StockLoadText.Text = $"CPU: {_stockLoadCpuPercent:F0}% | GPU: {_stockLoadGpuMemoryPercent:F0}% ({_stockLoadGpuMode})";
-        }
-
         private void UpdateRuntimeLoadStatusText()
         {
             if (RuntimeLoadText == null)
@@ -3160,379 +3210,10 @@ namespace CNCSS
                 _runtimeLoadLastCpu = cpuNow;
             }
 
-            double gpuPercent = Math.Clamp(GpuVerificationEngine.LastEstimatedGpuLoadPercent, 0.0, 100.0);
-            string voxelInfo = _stockLifecycle.Stock switch
-            {
-                VoxelStock vs => vs.TotalVoxelCount.ToString("N0", CultureInfo.CurrentCulture),
-                _ => "-",
-            };
-            RuntimeLoadText.Text = $"CPU: {_runtimeCpuPercent:F0}% | GPU: {gpuPercent:F0}% | Voxels: {voxelInfo} | Виз: воксельная 3D";
-        }
-
-        private static int EstimateFinalStockChunkCount(StockConfig cfg)
-        {
-            static int AxisChunks(double length)
-            {
-                int voxels = Math.Max(1, (int)(length / FinalStockSettings.ResolutionMm));
-                return (voxels + VoxelChunk.Size - 1) / VoxelChunk.Size;
-            }
-
-            return AxisChunks(cfg.MaxX - cfg.MinX) *
-                   AxisChunks(cfg.MaxY - cfg.MinY) *
-                   AxisChunks(cfg.MaxZ - cfg.MinZ);
-        }
-
-        private async Task UpdateFinalStockMeshWithProgressAsync(VoxelStock finalStock, int displayTotalChunks, double phaseStart)
-        {
-            // Для верифицированной итоговой заготовки важнее полнота кадра, чем поэтапная дорисовка:
-            // пересобираем все грязные чанки за один проход, чтобы геометрия сразу была целиком
-            // и не зависела от текущего положения камеры.
-            SetFinalStockDisplayProgress(displayTotalChunks, phaseStart, 1.0, 0.0);
-            StockProgressPanel?.UpdateLayout();
-            await Dispatcher.Yield(DispatcherPriority.Render);
-
-            await finalStock.UpdateAllVisualsAsync();
-            SetStockProgress(100, $"{displayTotalChunks} / {displayTotalChunks} чанков");
-        }
-
-        private void SetFinalStockDisplayProgress(int totalChunks, double phaseStart, double phaseEnd, double phaseFraction)
-        {
-            totalChunks = Math.Max(1, totalChunks);
-            phaseFraction = Math.Clamp(phaseFraction, 0.0, 1.0);
-            double normalized = phaseStart + (phaseEnd - phaseStart) * phaseFraction;
-            int doneChunks = Math.Clamp((int)Math.Round(totalChunks * normalized), 0, totalChunks);
-            SetStockProgress(normalized * 100.0, $"{doneChunks} / {totalChunks} чанков");
-        }
-
-        /// <summary>Финальная сборка заготовки: при включённом GPU и допустимом размере сетки — compute, иначе CPU.</summary>
-        private async Task<VoxelStock> TryBuildFinalStockAsync(
-            StockConfig cfg,
-            ParsedCommand[] commands,
-            Dictionary<int, FinalStockTool> tools,
-            Progress<(int Done, int Total)> finalBuildProgress)
-        {
-            return await Task.Run(() =>
-            {
-                List<VoxelStock.CylinderCut> cuts = CollectFinalStockCuts(cfg, commands, tools, finalBuildProgress);
-                cuts = OptimizeFinalCutsLinearRuns(cuts);
-
-                if (_gpuVerificationSettings.Enabled &&
-                    TryBuildFinalStockOnGpu(cfg, cuts, finalBuildProgress, commands.Length, out VoxelStock? gpuStock))
-                {
-                    return gpuStock ?? BuildFinalStockCpuFromCuts(cfg, commands.Length, cuts, finalBuildProgress);
-                }
-
-                return BuildFinalStockCpuFromCuts(cfg, commands.Length, cuts, finalBuildProgress);
-            }).ConfigureAwait(false);
-        }
-
-        private bool TryBuildFinalStockOnGpu(
-            StockConfig cfg,
-            List<VoxelStock.CylinderCut> cuts,
-            IProgress<(int Done, int Total)> progress,
-            int commandsCount,
-            out VoxelStock? stock)
-        {
-            stock = null;
-            if (cuts.Count == 0)
-            {
-                return false;
-            }
-
-            GpuVerificationProbeResult probe = GpuVerificationEngine.Probe();
-            if (!probe.IsAvailable)
-            {
-                return false;
-            }
-
-            try
-            {
-                var gb = new GpuStockBounds(cfg.MinX, cfg.MaxX, cfg.MinY, cfg.MaxY, cfg.MinZ, cfg.MaxZ);
-                var gpuCuts = new GpuCylinderCut[cuts.Count];
-                if (cuts.Count >= 2048)
-                {
-                    var convertParallel = new ParallelOptions
-                    {
-                        MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount)
-                    };
-                    Parallel.For(0, cuts.Count, convertParallel, i =>
-                    {
-                        var c = cuts[i];
-                        gpuCuts[i] = new GpuCylinderCut(
-                            c.Start.X,
-                            c.Start.Y,
-                            c.Start.Z,
-                            c.End.X,
-                            c.End.Y,
-                            c.End.Z,
-                            c.Radius,
-                            c.FluteLength);
-                    });
-                }
-                else
-                {
-                    for (int i = 0; i < cuts.Count; i++)
-                    {
-                        var c = cuts[i];
-                        gpuCuts[i] = new GpuCylinderCut(
-                            c.Start.X,
-                            c.Start.Y,
-                            c.Start.Z,
-                            c.End.X,
-                            c.End.Y,
-                            c.End.Z,
-                            c.Radius,
-                            c.FluteLength);
-                    }
-                }
-
-                var cutProgress = new Progress<(int Done, int Total)>(p =>
-                {
-                    int overallDone = commandsCount + p.Done;
-                    int overallTotal = commandsCount + Math.Max(1, p.Total);
-                    progress.Report((overallDone, overallTotal));
-                });
-
-                if (!GpuVerificationEngine.TryComputeOccupancy(
-                        gb,
-                        FinalStockSettings.ResolutionMm,
-                        0,
-                        gpuCuts,
-                        cutProgress,
-                        out uint[]? occ,
-                        out _,
-                        out _,
-                        out _,
-                        out string? _))
-                {
-                    return false;
-                }
-
-                if (occ == null)
-                {
-                    return false;
-                }
-
-                stock = VoxelStock.FromGpuOccupancyMask(
-                    cfg.MaxX - cfg.MinX,
-                    cfg.MaxY - cfg.MinY,
-                    cfg.MaxZ - cfg.MinZ,
-                    FinalStockSettings.ResolutionMm,
-                    new Point3D((cfg.MinX + cfg.MaxX) / 2, (cfg.MinY + cfg.MaxY) / 2, 0),
-                    cfg.MaxZ,
-                    occ);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"GPU final stock failed, CPU fallback: {ex.Message}");
-                stock = null;
-                return false;
-            }
-        }
-
-        private static VoxelStock BuildFinalStockCpuFromCuts(
-            StockConfig cfg,
-            int commandsCount,
-            List<VoxelStock.CylinderCut> cuts,
-            IProgress<(int Done, int Total)>? progress)
-        {
-            var stock = new VoxelStock(
-                cfg.MaxX - cfg.MinX,
-                cfg.MaxY - cfg.MinY,
-                cfg.MaxZ - cfg.MinZ,
-                FinalStockSettings.ResolutionMm,
-                new Point3D((cfg.MinX + cfg.MaxX) / 2, (cfg.MinY + cfg.MaxY) / 2, 0),
-                cfg.MaxZ);
-
-            stock.CutCylinders(cuts, (done, total) =>
-            {
-                int overallDone = commandsCount + done;
-                int overallTotal = commandsCount + Math.Max(1, total);
-                progress?.Report((overallDone, overallTotal));
-            });
-
-            return stock;
-        }
-
-        private static List<VoxelStock.CylinderCut> CollectFinalStockCuts(
-            StockConfig cfg,
-            IReadOnlyList<ParsedCommand> commands,
-            IReadOnlyDictionary<int, FinalStockTool> tools,
-            IProgress<(int Done, int Total)>? progress = null)
-        {
-            var replay = new GCodeParser();
-            var cuts = new List<VoxelStock.CylinderCut>(commands.Count);
-            int reportEvery = Math.Max(1, commands.Count / 100);
-
-            for (int commandIndex = 0; commandIndex < commands.Count; commandIndex++)
-            {
-                ParsedCommand cmd = commands[commandIndex];
-                double x0 = replay.State.X;
-                double y0 = replay.State.Y;
-                double z0 = replay.State.Z;
-
-                CommandReplayer.ReplayCommand(replay, cmd);
-
-                double x1 = replay.State.X;
-                double y1 = replay.State.Y;
-                double z1 = replay.State.Z;
-
-                if (!tools.TryGetValue(replay.State.ToolNumber ?? 0, out FinalStockTool? tool))
-                {
-                    continue;
-                }
-
-                if (cmd.GCodes.Any(g => g.Number == 28) || cmd.MCodes.Any(m => m.Number == 6))
-                {
-                    continue;
-                }
-
-                if (!IsCuttingMotion(replay.State.CurrentMotionMode.Number))
-                {
-                    continue;
-                }
-
-                if (cmd.Arc != null)
-                {
-                    AddArcFinalStockCuts(cuts, cmd.Arc, tool, cfg);
-                }
-                else if (HasPositionDelta(x0, y0, z0, x1, y1, z1))
-                {
-                    AddSegmentFinalStockCut(cuts, new Point3D(x0, y0, z0), new Point3D(x1, y1, z1), tool, cfg);
-                }
-
-                if ((commandIndex + 1) % reportEvery == 0 || commandIndex + 1 == commands.Count)
-                {
-                    progress?.Report((commandIndex + 1, commands.Count * 2));
-                }
-            }
-
-            return cuts;
-        }
-
-        private static bool IsCuttingMotion(int motionNumber) => motionNumber is 1 or 2 or 3;
-
-        private static bool HasPositionDelta(double x0, double y0, double z0, double x1, double y1, double z1)
-        {
-            return Math.Abs(x1 - x0) > ProjectConstants.EPSILON ||
-                   Math.Abs(y1 - y0) > ProjectConstants.EPSILON ||
-                   Math.Abs(z1 - z0) > ProjectConstants.EPSILON;
-        }
-
-        private static void AddArcFinalStockCuts(List<VoxelStock.CylinderCut> cuts, ArcGeometry arc, FinalStockTool tool, StockConfig cfg)
-        {
-            int samples = GetFinalArcSampleCount(arc);
-            Point3D previous = PointOnArc(arc, 0);
-            for (int i = 1; i <= samples; i++)
-            {
-                Point3D next = PointOnArc(arc, i / (double)samples);
-                AddSegmentFinalStockCut(cuts, previous, next, tool, cfg);
-                previous = next;
-            }
-        }
-
-        private static int GetFinalArcSampleCount(ArcGeometry arc)
-        {
-            double chordTolerance = FinalStockSettings.ResolutionMm * 0.5;
-            double angleByChordTolerance = arc.Radius <= ProjectConstants.EPSILON
-                ? Math.Abs(arc.SweepAngleRad)
-                : 2.0 * Math.Acos(Math.Clamp(1.0 - chordTolerance / arc.Radius, -1.0, 1.0));
-            double maxAngleStep = Math.Clamp(angleByChordTolerance, Math.PI / 720.0, Math.PI / 36.0);
-            return Math.Clamp((int)Math.Ceiling(Math.Abs(arc.SweepAngleRad) / maxAngleStep), 1, 20000);
-        }
-
-        private static Point3D PointOnArc(ArcGeometry arc, double t)
-        {
-            double ang = arc.StartAngleRad + t * arc.SweepAngleRad;
-            double u = arc.CenterU + arc.Radius * Math.Cos(ang);
-            double v = arc.CenterV + arc.Radius * Math.Sin(ang);
-            double x0 = arc.StartX + t * (arc.EndX - arc.StartX);
-            double y0 = arc.StartY + t * (arc.EndY - arc.StartY);
-            double z0 = arc.StartZ + t * (arc.EndZ - arc.StartZ);
-
-            return arc.Plane switch
-            {
-                18 => new Point3D(u, y0, v),
-                19 => new Point3D(x0, u, v),
-                _ => new Point3D(u, v, z0)
-            };
-        }
-
-        private static void AddSegmentFinalStockCut(List<VoxelStock.CylinderCut> cuts, Point3D start, Point3D end, FinalStockTool tool, StockConfig cfg)
-        {
-            Vector3D move = end - start;
-            if (move.Length <= ProjectConstants.EPSILON)
-            {
-                return;
-            }
-
-            double radius = tool.Diameter * 0.5;
-            if (!SegmentCanTouchStock(start, end, radius, tool.FluteLength, cfg))
-            {
-                return;
-            }
-
-            if (TryMergeWithPreviousFinalCut(cuts, start, end, radius, tool))
-            {
-                return;
-            }
-
-            cuts.Add(new VoxelStock.CylinderCut(start, end, radius, tool.FluteLength, tool.FluteColor));
-        }
-
-        private static bool TryMergeWithPreviousFinalCut(
-            List<VoxelStock.CylinderCut> cuts,
-            Point3D start,
-            Point3D end,
-            double radius,
-            FinalStockTool tool)
-        {
-            if (cuts.Count == 0)
-            {
-                return false;
-            }
-
-            var last = cuts[^1];
-            if (Math.Abs(last.Radius - radius) > ProjectConstants.EPSILON ||
-                Math.Abs(last.FluteLength - tool.FluteLength) > ProjectConstants.EPSILON ||
-                !last.ToolColor.Equals(tool.FluteColor) ||
-                (last.End - start).Length > FinalStockSettings.ResolutionMm)
-            {
-                return false;
-            }
-
-            Vector3D a = last.End - last.Start;
-            Vector3D b = end - start;
-            if (a.Length <= ProjectConstants.EPSILON || b.Length <= ProjectConstants.EPSILON)
-            {
-                return false;
-            }
-
-            a.Normalize();
-            b.Normalize();
-            if (Vector3D.DotProduct(a, b) < 0.9995 ||
-                Vector3D.CrossProduct(a, b).Length > 0.001)
-            {
-                return false;
-            }
-
-            cuts[^1] = last with { End = end };
-            return true;
-        }
-
-        private static bool SegmentCanTouchStock(Point3D start, Point3D end, double radius, double fluteLength, StockConfig cfg)
-        {
-            double minX = Math.Min(start.X, end.X) - radius;
-            double maxX = Math.Max(start.X, end.X) + radius;
-            double minY = Math.Min(start.Y, end.Y) - radius;
-            double maxY = Math.Max(start.Y, end.Y) + radius;
-            double minZ = Math.Min(start.Z, end.Z);
-            double maxZ = Math.Max(start.Z, end.Z) + fluteLength;
-
-            return maxX >= cfg.MinX && minX <= cfg.MaxX &&
-                   maxY >= cfg.MinY && minY <= cfg.MaxY &&
-                   maxZ >= cfg.MinZ && minZ <= cfg.MaxZ;
+            string stockState = _stockLifecycle.Stock is VoxelStockVolume voxel
+                ? $"Adaptive ({voxel.AdaptiveStock.Octree.EnumerateAllChunks().Count} chunks, cut {voxel.LastRemovedVoxels})"
+                : "нет";
+            RuntimeLoadText.Text = $"CPU: {_runtimeCpuPercent:F0}% | Заготовка: {stockState}";
         }
 
         private void StopAnimationCycle()
@@ -3543,11 +3224,12 @@ namespace CNCSS
             _accumulatedRunTime = _runTimeStopwatch.Elapsed;
             _accumulatedCycleTime = _cycleTimeStopwatch.Elapsed;
             _programPlaybackHost.ResetToHome();
-            _lastPosition = _programPlaybackHost.CurrentPosition;
+            SyncCutTrackingFromMachinePosition(_programPlaybackHost.CurrentPosition);
             _interpolationProgress = _programPlaybackHost.InterpolationProgress;
-            _mainPresenter.Reset(_lastPosition);
+            _mainPresenter.Reset(_programPlaybackHost.CurrentPosition);
             FanucPanel.UpdateProgramLine(null);
             HideToolpathPlaybackCap();
+
             if (_lineVisualsMap.Count > 0 && _programLine.SelectedIndex >= 0)
             {
                 _toolpathRenderService.UpdateVisibilityByLine(
@@ -3591,13 +3273,6 @@ namespace CNCSS
             try
             {
                 await Dispatcher.Yield(DispatcherPriority.Render);
-
-                if (MenuGpuVerificationItem != null)
-                {
-                    MenuGpuVerificationItem.IsChecked = _gpuVerificationSettings.Enabled;
-                }
-
-                GpuVerificationProbeAndUpdateStatus();
                 _machineVisualCoordinator.Attach(Viewport);
                 _machineVisualCoordinator.SetMachineConstructorOverlaysVisible(false);
                 UpdateVoxelLoadingMessage("Загрузка станка и профиля...");
@@ -3612,755 +3287,13 @@ namespace CNCSS
 
             OperatorPanel.HighlightMode(_currentControllerMode);
             OperatorPanel.SyncWorkOverrideSlider(_workFeedOverridePercent);
-
             OperatorPanel.SyncSpindleOverrideSlider(_operatorSpindleOverridePercent);
             OperatorPanel.SyncMachiningToggles(_isSingleBlockEnabled, _isOptionalStopEnabled);
 
             _ = Dispatcher.BeginInvoke(new Action(InitializeExternalPanelWindows), DispatcherPriority.Loaded);
-            // After LoadAndRender's ZoomExtents and machine rebuild — lock startup camera to the default 3/4 view.
             _ = Dispatcher.BeginInvoke(
                 () => ViewportCameraHelper.SetDefaultMainSceneView(Viewport),
-                System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        }
-
-        private async Task ApplyActiveMachineProfileAsync()
-        {
-            var profile = _machineProfileService.ActiveProfile;
-            _machineCore.UpdateKinematics(profile.ToKinematicsModel());
-            ApplySceneOriginFromMcs(profile.McsZeroOffset);
-
-            var physicalHome = profile.GetPhysicalHomePosition();
-            // Do not publish MachineZeroSetTo here: it compensates axis pose and leaves the machine
-            // between physical 0 and profile HOME (Fanuc MACHINE shows ~2× McsZeroOffset).
-            _machineCore.ApplyProfileHome(profile);
-            if (_currentParser != null)
-            {
-                profile.ApplyHomeToMachineState(_currentParser.State);
-            }
-
-            // G28 / M6: физическая HOME из профиля (ось HOME в MCS + McsZeroOffset).
-            _programExecutionService.SetHomeTarget(physicalHome.X, physicalHome.Y, physicalHome.Z);
-
-            double targetX = physicalHome.X;
-            double targetY = physicalHome.Y;
-            double targetZ = physicalHome.Z;
-            _machineCore.HomeTo(targetX, targetY, targetZ);
-            _programPlaybackHost.SetCurrentPosition(new Point3D(targetX, targetY, targetZ));
-            _lastPosition = GetToolTcpPosition(targetX, targetY, targetZ);
-
-            await _machineVisualCoordinator.RebuildAsync();
-            _machineVisualCoordinator.UpdatePose(targetX, targetY, targetZ);
-            ApplyStockPlacementFromProfile(profile, targetX, targetY, targetZ);
-            bool showTool = _filterShowTool && _selectedTool is ToolViewModel;
-            SyncToolVisualMount(showTool);
-            if (_selectedTool is ToolViewModel tool)
-            {
-                UpdateToolGeometry(tool, GetToolHolderPosition(targetX, targetY, targetZ));
-            }
-
-            SyncActiveWcsOriginMarker();
-
-            // If MCS changed (profile applied/saved), toolpath must be rebuilt with the new seed.
-            // Otherwise the existing contour (built with old MCS seed) will be shifted by _sceneWorldShift and appear in a wrong corner.
-            if (_currentParser != null && _loadedNcProgramPath != null)
-            {
-                RebuildProgramAndToolpathForCurrentWorkOffsets();
-            }
-        }
-
-        private void ApplySceneOriginFromMcs(MachineGeometryPoint mcsZeroOffset)
-        {
-            // Kinematic attach/limits are in MCS; assembly root maps MCS → absolute scene.
-            _sceneWorldShift = new TranslateTransform3D(mcsZeroOffset.X, mcsZeroOffset.Y, mcsZeroOffset.Z);
-            _machineVisualCoordinator.SetWorldTransform(_sceneWorldShift);
-
-            SyncStockVisualToTable();
-
-            _toolVisual.Transform = _toolTransform;
-            SyncToolVisualMount(_filterShowTool && IsToolVisualAttached());
-
-            // Table kinematic transform is in MCS; assembly root applies +McsZeroOffset.
-            if (_stockLifecycle.AnchoredToTable)
-            {
-                SyncStockVisualToTable();
-            }
-        }
-
-        private int GetActiveWorkOffsetSystemNumber()
-        {
-            if (_currentParser != null)
-            {
-                return _currentParser.State.CurrentCoordinateSystem.Number;
-            }
-
-            return TryParseCoordinateSystemNumber(_currentCoordSystem, out int parsed)
-                ? parsed
-                : MachineState.MinWorkOffsetNumber;
-        }
-
-        private static bool TryParseCoordinateSystemNumber(string text, out int systemNumber)
-        {
-            systemNumber = MachineState.MinWorkOffsetNumber;
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                return false;
-            }
-
-            text = text.Trim();
-            if (text.StartsWith('(') && text.EndsWith(')'))
-            {
-                text = text[1..^1].Trim();
-            }
-
-            if (text.Length < 2 || (text[0] != 'G' && text[0] != 'g'))
-            {
-                return false;
-            }
-
-            if (!int.TryParse(text.AsSpan(1), out systemNumber))
-            {
-                return false;
-            }
-
-            return systemNumber is >= MachineState.MinWorkOffsetNumber and <= MachineState.MaxWorkOffsetNumber;
-        }
-
-        private void SyncActiveWcsOriginMarker(bool updateTableLocalPosition = true)
-        {
-            (double X, double Y, double Z) pose = _machineVisualCoordinator.GetPreviewPhysicalPose();
-            SyncActiveWcsOriginMarker(
-                GetActiveWorkOffsetSystemNumber(),
-                pose.X,
-                pose.Y,
-                pose.Z,
-                updateTableLocalPosition);
-        }
-
-        private void SyncActiveWcsOriginMarker(
-            int activeSystemNumber,
-            double machineX,
-            double machineY,
-            double machineZ,
-            bool updateTableLocalPosition = true)
-        {
-            const double sphereRadiusMm = 2.8;
-            const double axisLenMm = 18.0;
-            MachineDefinition profile = _machineProfileService.ActiveProfile;
-            bool onTable = MachineKinematics.UsesTableMountedWorkpiece(profile);
-            ModelVisual3D? tableMountedMarker = null;
-            Point3D? activeWcsTableLocal = null;
-
-            for (int sys = MachineState.MinWorkOffsetNumber; sys <= MachineState.MaxWorkOffsetNumber; sys++)
-            {
-                var marker = WcsMarkerVisualBuilder.Build($"G{sys}", sphereRadiusMm, axisLenMm);
-                _wcsMarkers[sys] = marker;
-
-                _machineVisualCoordinator.DetachFromMachineHierarchy(marker);
-                if (Viewport.Children.Contains(marker))
-                {
-                    Viewport.Children.Remove(marker);
-                }
-
-                if (sys != activeSystemNumber)
-                {
-                    continue;
-                }
-
-                if (!_workOffsets.TryGetValue(sys, out (double X, double Y, double Z) v))
-                {
-                    v = (0, 0, 0);
-                }
-
-                if (onTable)
-                {
-                    tableMountedMarker = marker;
-                    if (updateTableLocalPosition)
-                    {
-                        activeWcsTableLocal = WorkpieceMountPlacement.ResolveFixedWcsOriginTableLocal(
-                            profile,
-                            sys,
-                            v.X,
-                            v.Y,
-                            v.Z,
-                            machineX,
-                            machineY,
-                            machineZ,
-                            captureIfMissing: true);
-                    }
-                    else if (marker.Transform is TranslateTransform3D existing)
-                    {
-                        activeWcsTableLocal = new Point3D(existing.OffsetX, existing.OffsetY, existing.OffsetZ);
-                    }
-                    else if (WorkpieceMountPlacement.TryGetRegisteredWcsOriginTableLocal(sys, out Point3D registered))
-                    {
-                        activeWcsTableLocal = registered;
-                    }
-                }
-                else if (updateTableLocalPosition)
-                {
-                    Point3D wcsInAssemblyMcs = WorkpieceMountPlacement.GetWcsOriginAssemblyMcs(
-                        profile,
-                        GetMachineStateForWcsVisual(),
-                        machineX,
-                        machineY,
-                        machineZ);
-                    _machineVisualCoordinator.AssemblyRoot.Children.Add(marker);
-                    marker.Transform = new TranslateTransform3D(
-                        wcsInAssemblyMcs.X,
-                        wcsInAssemblyMcs.Y,
-                        wcsInAssemblyMcs.Z);
-                }
-            }
-
-            _machineVisualCoordinator.SetTableMountedWcsMarker(
-                onTable ? tableMountedMarker : null,
-                activeWcsTableLocal);
-        }
-
-        private MachineState GetMachineStateForWcsVisual()
-        {
-            MachineState state = _currentParser != null
-                ? _currentParser.State.Clone()
-                : CreateProgramSeedState();
-            foreach (KeyValuePair<int, (double X, double Y, double Z)> pair in _workOffsets)
-            {
-                if (pair.Key is >= MachineState.MinWorkOffsetNumber and <= MachineState.MaxWorkOffsetNumber)
-                {
-                    state.SetWorkOffset(pair.Key, pair.Value.X, pair.Value.Y, pair.Value.Z);
-                }
-            }
-
-            return state;
-        }
-
-        private double GetToolStickOutMm()
-        {
-            if (_selectedTool is ToolViewModel selected)
-            {
-                return selected.OverallLength;
-            }
-
-            if (_cachedToolGeometryTool != null)
-            {
-                return _cachedToolGeometryTool.OverallLength;
-            }
-
-            return _machineProfileService.ActiveProfile.DefaultToolStickOutMm;
-        }
-
-        private Point3D GetToolTcpPosition(double machineX, double machineY, double machineZ) =>
-            _machineVisualCoordinator.GetToolCenterPoint(machineX, machineY, machineZ, GetToolStickOutMm());
-
-        private Point3D GetToolHolderPosition(double machineX, double machineY, double machineZ) =>
-            _machineVisualCoordinator.GetToolHolderPoint(machineX, machineY, machineZ);
-
-        private Point3D GetToolHolderPosition(Point3D machineAxisPosition) =>
-            GetToolHolderPosition(machineAxisPosition.X, machineAxisPosition.Y, machineAxisPosition.Z);
-
-        private void ApplyStockPlacementFromProfile(MachineDefinition profile, double machineX, double machineY, double machineZ)
-        {
-            if (!TryReadStockConfig(out StockConfig cfg))
-            {
-                return;
-            }
-
-            RealignStockCenteredOnMount(profile, cfg.MaxX - cfg.MinX, cfg.MaxY - cfg.MinY, cfg.MaxZ - cfg.MinZ);
-        }
-
-        private void RealignStockCenteredOnMount(MachineDefinition profile, double width, double depth, double height)
-        {
-            width = Math.Max(0.001, width);
-            depth = Math.Max(0.001, depth);
-            height = Math.Max(0.001, height);
-
-            Rect3D? tableBounds = _machineVisualCoordinator.TryGetTableMeshBoundsLocal(out Rect3D bounds) && !bounds.IsEmpty
-                ? bounds
-                : null;
-            WorkpiecePlacement.StockBounds aligned = WorkpieceMountPlacement.AlignStockTableLocal(
-                profile,
-                tableBounds,
-                width,
-                depth,
-                height);
-
-            _stockLifecycle.AnchoredToTable = true;
-            _stockLifecycle.BoundsAreTableLocal = true;
-            _stockLifecycle.AutoAlignToMount = true;
-            _stockLifecycle.Bounds = aligned;
-            SyncStockVisualToTable();
-        }
-
-        private bool TryGetStockTableLocalBounds(out WorkpiecePlacement.StockBounds bounds)
-        {
-            bounds = default;
-            if (!_stockLifecycle.AnchoredToTable || !_stockLifecycle.BoundsAreTableLocal || !TryReadStockConfig(out StockConfig cfg))
-            {
-                return false;
-            }
-
-            bounds = new WorkpiecePlacement.StockBounds(cfg.MinX, cfg.MaxX, cfg.MinY, cfg.MaxY, cfg.MinZ, cfg.MaxZ);
-            return true;
-        }
-
-        /// <summary>Только кинематика стола: контур/WCS/заготовка едут с table.Root без пересчёта по TCP.</summary>
-        private void ApplyTableKinematicPose(double machineX, double machineY, double machineZ)
-        {
-            var profile = _machineProfileService.ActiveProfile;
-            if (!MachineKinematics.UsesTableMountedWorkpiece(profile))
-            {
-                return;
-            }
-
-            _machineVisualCoordinator.EnsureTableMountedWcsMarkerAttached();
-            if (_stockLifecycle.AnchoredToTable)
-            {
-                _stockTableToWorld = TableSceneTransforms.BuildTableToSceneMatrix(profile, machineX, machineY, machineZ);
-            }
-        }
-
-        private void EnsureWcsTableLocalCacheForToolpath(MachineState seedState)
-        {
-            var profile = _machineProfileService.ActiveProfile;
-            if (!MachineKinematics.UsesTableMountedWorkpiece(profile))
-            {
-                return;
-            }
-
-            WorkpieceMountPlacement.SyncWcsOriginTableLocalFromMcs(
-                profile,
-                _workOffsets,
-                seedState.X,
-                seedState.Y,
-                seedState.Z);
-        }
-
-        /// <summary>Привязывает заготовку и контур УП к узлу стола (table-local) для кинематики стола.</summary>
-        private void SyncStockVisualToTable(bool syncWcsMarker = true)
-        {
-            var profile = _machineProfileService.ActiveProfile;
-            bool tableMachine = MachineKinematics.UsesTableMountedWorkpiece(profile);
-            bool stockOnTable = _stockLifecycle.AnchoredToTable && tableMachine;
-
-            if (!tableMachine)
-            {
-                _machineVisualCoordinator.SetTableMountedVisuals(null, null);
-                _machineVisualCoordinator.SetTableMountedWcsMarker(null);
-                EnsureVisualOnViewport(_stockVisual);
-                EnsureVisualOnViewport(_toolpathRoot);
-                _stockVisual.Transform = Transform3D.Identity;
-                _toolpathRoot.Transform = Transform3D.Identity;
-                if (syncWcsMarker)
-                {
-                    SyncActiveWcsOriginMarker();
-                }
-
-                return;
-            }
-
-            // Контур — всегда дочерний элемент table.Root (table-local); движется только кинематикой стола.
-            RemoveVisualFromViewport(_toolpathRoot);
-            _toolpathRoot.Transform = Transform3D.Identity;
-
-            if (stockOnTable)
-            {
-                RemoveVisualFromViewport(_stockVisual);
-                _stockVisual.Transform = Transform3D.Identity;
-            }
-            else
-            {
-                EnsureVisualOnViewport(_stockVisual);
-            }
-
-            _machineVisualCoordinator.SetTableMountedVisuals(
-                stockOnTable ? _stockVisual : null,
-                _toolpathRoot);
-            if (syncWcsMarker)
-            {
-                SyncActiveWcsOriginMarker();
-            }
-            else
-            {
-                _machineVisualCoordinator.EnsureTableMountedWcsMarkerAttached();
-            }
-
-            SyncToolVisualMount(_filterShowTool && IsToolVisualAttached());
-            (double mx, double my, double mz) = _machineVisualCoordinator.GetPreviewPhysicalPose();
-            ApplyTableKinematicPose(mx, my, mz);
-        }
-
-        private void EnsureVisualOnViewport(ModelVisual3D visual)
-        {
-            if (!Viewport.Children.Contains(visual))
-            {
-                Viewport.Children.Add(visual);
-            }
-        }
-
-        private void RemoveVisualFromViewport(ModelVisual3D visual)
-        {
-            if (Viewport.Children.Contains(visual))
-            {
-                Viewport.Children.Remove(visual);
-            }
-        }
-
-        private Point3D ToStockLocalPoint(Point3D world)
-        {
-            if (!_stockLifecycle.AnchoredToTable ||
-                !MachineKinematics.UsesTableMountedWorkpiece(_machineProfileService.ActiveProfile))
-            {
-                return world;
-            }
-
-            Point3D pose = GetCurrentPosition();
-            return TableSceneTransforms.SceneToTableLocal(
-                _machineProfileService.ActiveProfile,
-                pose.X,
-                pose.Y,
-                pose.Z,
-                world);
-        }
-
-        private void MenuMachineSetup_Click(object sender, RoutedEventArgs e)
-        {
-            if (_machineSetupWindow != null)
-            {
-                if (_machineSetupWindow.IsLoaded)
-                {
-                    _machineSetupWindow.Activate();
-                    return;
-                }
-
-                _machineSetupWindow = null;
-            }
-
-            var wnd = new MachineSetupWindow(_machineProfileService, _stlMeshLoader)
-            {
-                Owner = this
-            };
-            wnd.Closed += (_, _) => _machineSetupWindow = null;
-            _machineSetupWindow = wnd;
-            if (wnd.ShowDialog() == true || wnd.WasSaved)
-            {
-                _ = ApplyActiveMachineProfileAsync();
-            }
-        }
-
-        private void MenuMachineProfile_Click(object sender, RoutedEventArgs e)
-        {
-            var picker = new MachineProfilePickerWindow(_machineProfileService, () => MenuMachineSetup_Click(sender, e))
-            {
-                Owner = this
-            };
-            if (picker.ShowDialog() == true)
-            {
-                // Profile switch should move axes to profile Home.
-                _ = ApplyActiveMachineProfileAsync();
-            }
-        }
-
-        private void MenuMachineSaveFactoryDefault_Click(object sender, RoutedEventArgs e)
-        {
-            string name = _machineProfileService.ActiveProfile.DisplayName;
-            if (MessageBox.Show(
-                    this,
-                    $"Сохранить текущий профиль «{name}» как заводские настройки?\n\n"
-                    + "Пункт «Сбросить заводской профиль» будет восстанавливать именно этот снимок.",
-                    "Станок",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Question) != MessageBoxResult.Yes)
-            {
-                return;
-            }
-
-            try
-            {
-                _machineProfileService.SaveActiveProfileAsFactoryDefault();
-                MessageBox.Show(
-                    this,
-                    "Заводские настройки сохранены.",
-                    "Станок",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, ex.Message, "Станок", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-        }
-
-        private void MenuMachineFactoryReset_Click(object sender, RoutedEventArgs e)
-        {
-            string prompt = _machineProfileService.HasUserFactorySnapshot()
-                ? "Восстановить заводской профиль станка из сохранённого снимка?"
-                : "Восстановить заводской профиль станка из поставки (STEP)?";
-            if (MessageBox.Show(this, prompt, "Станок", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
-            {
-                return;
-            }
-
-            _machineProfileService.ResetToFactoryDefault(_stlMeshLoader);
-            _ = ApplyActiveMachineProfileAsync();
-        }
-
-        // MCS zero is managed per profile in Machine Setup.
-
-        private void MenuGpuVerificationItem_CheckedChanged(object sender, RoutedEventArgs e)
-        {
-            if (sender is not MenuItem mi)
-            {
-                return;
-            }
-
-            _gpuVerificationSettings.Enabled = mi.IsChecked == true;
-            if (!_gpuVerificationSettings.Enabled)
-            {
-                _stockLifecycle.GpuSession?.Dispose();
-                _stockLifecycle.GpuSession = null;
-            }
-
-            GpuVerificationSettingsStore.Save(_gpuVerificationSettings);
-            GpuVerificationProbeAndUpdateStatus();
-        }
-
-        /// <summary>Обновляет подсказку меню после пробы DXGI/D3D11.</summary>
-        private void GpuVerificationProbeAndUpdateStatus()
-        {
-            GpuVerificationProbeResult probe = GpuVerificationEngine.Probe();
-            int effectiveAxisCap = GpuVerificationEngine.ComputeAxisCapByVram(0);
-            static string FormatGiB(ulong bytes) => bytes > 0 ? $"{bytes / (1024.0 * 1024.0 * 1024.0):F2} GiB" : "н/д";
-            ulong totalGpuMemoryBytes = probe.DedicatedVideoMemoryBytes + probe.SharedSystemMemoryBytes;
-            if (MenuGpuVerificationItem != null)
-            {
-                MenuGpuVerificationItem.ToolTip =
-                    $"Вся УП верифицируется на GPU сеткой симуляции; финальный блок — отдельно при лимите сетки. " +
-                    $"Лимит по оси: {effectiveAxisCap} (авто, бюджет до 90% GPU memory)." +
-                    $" Dedicated: {FormatGiB(probe.DedicatedVideoMemoryBytes)}, Shared: {FormatGiB(probe.SharedSystemMemoryBytes)}, Total: {FormatGiB(totalGpuMemoryBytes)}" +
-                    $" ({GpuVerificationSettingsStore.GetDefaultFilePath()}).\n" +
-                    (probe.IsAvailable
-                        ? "GPU compute: доступен."
-                        : $"GPU compute: недоступен для сессии — рантайм только CPU; причина: {probe.Message}");
-            }
-
-            System.Diagnostics.Debug.WriteLine(
-                probe.IsAvailable ? "GPU верификация: готово" : $"GPU верификация: {probe.Message}");
-        }
-
-        private static void CreateDemoNc(string filePath)
-        {
-            var content = @"O0001
-
-G40G49G80
-G21G17
-G54
-
-G91 G28 Z0
-G90
-
-T1 M6
-S3000 M3
-F1000
-
-G00 X0 Y-15
-Z10 G43 H1
-
-M8
-
-G1 Z0
-G91
-Y115
-X20
-Y-100
-X20
-Y100
-X20
-Y-100
-X20
-Y100
-X20
-Y-100
-X20
-Y115
-
-
-G90
-G00 Z10
-
-M5 M1 M9
-
-G91 G28 Z0
-G90
-
-T2 M6
-S5000 M3
-F2000
-G00 X0 Y0
-Z10 G43 H1
-
-G1 Z-20
-
-M8
-
-Y100
-X130
-Y10
-G02 Y0 X120 R10
-G1 X0
-
-G0 Z10
-X50
-Y50
-G1 Z1
-G91 
-X10
-G02 X-20 R10 Z-1
-G02 X20 R10 Z-1
-G02 X-20 R10 Z-1
-G02 X20 R10 Z-1
-G02 X-20 R10 Z-1
-G02 X20 R10 Z-1
-G02 X-20 R10 Z-1
-G02 X20 R10 Z-1
-G02 X-20 R10 Z-1
-G02 X20 R10 Z-1
-G02 X-20 R10 Z-1
-G02 X20 R10 Z-1
-G02 X-20 R10 Z-1
-G02 X20 R10 Z-1
-G02 X-20 R10 Z-1
-G02 X20 R10 Z-1
-G1 X-10
-
-G90
-
-G00 Z10
-
-M5 M1 M9
-
-G91 G28 Z0
-G90
-
-M30";
-            File.WriteAllText(filePath, content);
-        }
-
-        private void OpenFile_Click(object sender, RoutedEventArgs e)
-        {
-            var dlg = new OpenFileDialog { Filter = "G-code (*.nc;*.ngc;*.tap;*.txt)|*.nc;*.ngc;*.tap;*.txt|Все файлы|*.*" };
-            if (dlg.ShowDialog(this) == true) LoadAndRender(dlg.FileName);
-        }
-
-        private void Exit_Click(object sender, RoutedEventArgs e) => Close();
-        private void ZoomExtents_Click(object sender, RoutedEventArgs e) => Viewport.ZoomExtents();
-
-        /// <summary>До Cycle Start — параметрический <see cref="_stockModel"/>; после — воксельный <c>MainModel</c>.</summary>
-        private Model3D? GetStockViewportContent()
-        {
-            return _stockLifecycle.Stock != null ? _stockLifecycle.Stock.MainModel : _stockModel;
-        }
-
-        private Color GetSelectedStockColor() =>
-            _stockLifecycle.ResolveStockColor(
-                _stockLifecycle.ConstructorConfig?.Color,
-                Colors.LightGray);
-
-        private static MeshGeometry3D BuildStockBoxGeometry(StockConfig cfg)
-        {
-            double sx = Math.Max(0.001, cfg.MaxX - cfg.MinX);
-            double sy = Math.Max(0.001, cfg.MaxY - cfg.MinY);
-            double sz = Math.Max(0.001, cfg.MaxZ - cfg.MinZ);
-            var center = new Point3D((cfg.MinX + cfg.MaxX) * 0.5, (cfg.MinY + cfg.MaxY) * 0.5, (cfg.MinZ + cfg.MaxZ) * 0.5);
-            var builder = new MeshBuilder(false, false);
-            builder.AddBox(center, sx, sy, sz);
-            var mesh = builder.ToMesh();
-            mesh.Freeze();
-            return mesh;
-        }
-
-        private static StockConfig ToStockConfig(WorkpiecePlacement.StockBounds bounds) =>
-            new(bounds.MinX, bounds.MaxX, bounds.MinY, bounds.MaxY, bounds.MinZ, bounds.MaxZ);
-
-        private static WorkpiecePlacement.StockBounds ToStockBounds(StockConfig cfg) =>
-            new(cfg.MinX, cfg.MaxX, cfg.MinY, cfg.MaxY, cfg.MinZ, cfg.MaxZ);
-
-        private bool TryReadStockConfig(out StockConfig cfg)
-        {
-            cfg = default;
-            if (_stockLifecycle.Bounds is not WorkpiecePlacement.StockBounds bounds)
-            {
-                return false;
-            }
-
-            cfg = ToStockConfig(bounds);
-            return cfg.MaxX > cfg.MinX && cfg.MaxY > cfg.MinY && cfg.MaxZ > cfg.MinZ;
-        }
-
-        /// <summary>
-        /// Оптимизация финальной воксельной симуляции:
-        /// объединяет подряд идущие коллинеарные линейные проходы одинаковым инструментом
-        /// в один удлинённый "макро-проход" без изменения габаритов съёма.
-        /// </summary>
-        private static List<VoxelStock.CylinderCut> OptimizeFinalCutsLinearRuns(List<VoxelStock.CylinderCut> source)
-        {
-            if (source.Count < 2)
-            {
-                return source;
-            }
-
-            var optimized = new List<VoxelStock.CylinderCut>(source.Count);
-            VoxelStock.CylinderCut current = source[0];
-
-            for (int i = 1; i < source.Count; i++)
-            {
-                VoxelStock.CylinderCut next = source[i];
-                if (CanMergeLinearRuns(current, next))
-                {
-                    current = current with { End = next.End };
-                    continue;
-                }
-
-                optimized.Add(current);
-                current = next;
-            }
-
-            optimized.Add(current);
-            return optimized;
-        }
-
-        private static bool CanMergeLinearRuns(VoxelStock.CylinderCut a, VoxelStock.CylinderCut b)
-        {
-            if (Math.Abs(a.Radius - b.Radius) > ProjectConstants.EPSILON ||
-                Math.Abs(a.FluteLength - b.FluteLength) > ProjectConstants.EPSILON ||
-                !a.ToolColor.Equals(b.ToolColor))
-            {
-                return false;
-            }
-
-            // Проходы должны стыковаться в пределах шага финальной сетки.
-            if ((a.End - b.Start).Length > FinalStockSettings.ResolutionMm)
-            {
-                return false;
-            }
-
-            Vector3D da = a.End - a.Start;
-            Vector3D db = b.End - b.Start;
-            if (da.Length <= ProjectConstants.EPSILON || db.Length <= ProjectConstants.EPSILON)
-            {
-                return false;
-            }
-
-            da.Normalize();
-            db.Normalize();
-            if (Vector3D.DotProduct(da, db) < 0.9997 ||
-                Vector3D.CrossProduct(da, db).Length > 0.001)
-            {
-                return false;
-            }
-
-            // Проверяем, что конечная точка второго прохода остаётся на той же прямой.
-            Vector3D fromAStartToBEnd = b.End - a.Start;
-            Vector3D offLine = Vector3D.CrossProduct(fromAStartToBEnd, da);
-            return offLine.Length <= FinalStockSettings.ResolutionMm;
+                DispatcherPriority.ApplicationIdle);
         }
 
         /// <summary>
@@ -4383,121 +3316,179 @@ M30";
                 return false;
             }
 
-            if (!_stockLifecycle.TryEnsureVoxelRuntime(
-                    reuseRunningSimulation,
-                    _gpuVerificationSettings.Enabled,
-                    GetSelectedStockColor(),
-                    out string? gpuError))
+            try
             {
-                if (warnOnInvalidStockConfig)
+                if (!_stockLifecycle.TryEnsureVoxelRuntime(
+                        reuseRunningSimulation,
+                        GetSelectedStockColor()))
                 {
-                    MessageBox.Show(this, "Некорректные параметры заготовки.", "Заготовка", MessageBoxButton.OK, MessageBoxImage.Warning);
-                }
+                    if (warnOnInvalidStockConfig)
+                    {
+                        MessageBox.Show(this, "Некорректные параметры заготовки.", "Заготовка", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    }
 
+                    return false;
+                }
+            }
+            catch (Exception ex) when (warnOnInvalidStockConfig)
+            {
+                MessageBox.Show(this, ex.Message, "Заготовка", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return false;
             }
 
-            if (gpuError != null)
-            {
-                System.Diagnostics.Debug.WriteLine($"GPU-сессия УП недоступна: {gpuError}");
-            }
-
-            ApplyStockViewportVisibility();
             return true;
         }
 
-        /// <summary>Cycle Start: модальное окно, построение вокселей, замена параметрического меша, синхронная прогревка меша.</summary>
+        /// <summary>Cycle Start: переиспользует заготовку из конструктора без тяжёлого прогрева; пересборка только после FreezeModel.</summary>
         private bool EnsureVoxelStockForRun()
         {
-            bool showModal = _stockLifecycle.DeferVoxelUntilRun || _stockLifecycle.Stock == null;
-            if (showModal)
+            if (_stockLifecycle.Stock is VoxelStockVolume existing && !existing.IsCutsFrozen)
             {
-                ShowVoxelLoadingWindow("Расчет воксельной модели...");
+                _stockLifecycle.DeferVoxelShellUntilApproach = true;
+                _stockLifecycle.DeferVoxelUntilRun = false;
+                ApplyStockViewportVisibility(triggerMeshRefresh: false);
+                return true;
+            }
+
+            if (_stockLifecycle.Stock is VoxelStockVolume { IsCutsFrozen: true })
+            {
+                return BuildAndWarmVoxelStock(
+                    "Сброс заготовки для нового цикла…",
+                    reuseRunningSimulation: false,
+                    showLoadingModal: true);
+            }
+
+            if (_stockLifecycle.Stock is VoxelStockVolume { ShellDisplayed: true, IsCutsFrozen: false })
+            {
+                _stockLifecycle.DeferVoxelShellUntilApproach = false;
+                _stockLifecycle.DeferVoxelUntilRun = false;
+                ApplyStockViewportVisibility(triggerMeshRefresh: false);
+                return true;
+            }
+
+            if (_stockLifecycle.Stock == null)
+            {
+                if (_stockLifecycle.Bounds == null || _stockLifecycle.ConstructorConfig == null)
+                {
+                    MessageBox.Show(
+                        this,
+                        "Создайте заготовку в меню «Симуляция → Конструктор заготовки…».",
+                        "Заготовка",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                    return false;
+                }
+
+                if (!BuildAndWarmVoxelStock(
+                        "Подготовка воксельной заготовки…",
+                        reuseRunningSimulation: false,
+                        showLoadingModal: true))
+                {
+                    return false;
+                }
+            }
+
+            _stockLifecycle.DeferVoxelShellUntilApproach = true;
+            _stockLifecycle.DeferVoxelUntilRun = true;
+            ApplyStockViewportVisibility(triggerMeshRefresh: false);
+            return true;
+        }
+
+        /// <summary>Создаёт воксельный runtime и прогревает оболочку.</summary>
+        private bool BuildAndWarmVoxelStock(string loadingMessage, bool reuseRunningSimulation, bool showLoadingModal)
+        {
+            if (showLoadingModal)
+            {
+                ShowVoxelLoadingWindow(loadingMessage);
             }
 
             try
             {
-                if (!TryEnsureVoxelStock(reuseRunningSimulation: true, warnOnInvalidStockConfig: true))
+                if (!TryReadStockConfig(out _))
                 {
+                    MessageBox.Show(this, "Некорректные параметры заготовки.", "Заготовка", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
 
-                UpdateVoxelLoadingMessage("Расчёт и загрузка вокселей заготовки...");
-                // Цельная модель заменяется воксельной: GetStockViewportContent() отдаёт _stockLifecycle.Stock.MainModel.
-                ApplyStockViewportVisibility();
-
-                if (_stockLifecycle.Stock is VoxelStock voxelStock)
+                if (reuseRunningSimulation &&
+                    _stockLifecycle.Stock is VoxelStockVolume { IsCutsFrozen: false, ShellDisplayed: true })
                 {
-                    WarmUpStockVisualFullySync(voxelStock);
+                    _stockLifecycle.DeferVoxelShellUntilApproach = false;
+                    _stockLifecycle.DeferVoxelUntilRun = false;
+                    ApplyStockViewportVisibility(triggerMeshRefresh: false);
+                    return true;
                 }
 
+                if (_stockLifecycle.Stock == null)
+                {
+                    if (!_stockLifecycle.TryEnsureVoxelRuntime(false, GetSelectedStockColor(), PumpUiForLoadingOverlay))
+                    {
+                        MessageBox.Show(
+                            this,
+                            "Не удалось подготовить заготовку. Проверьте параметры в конструкторе.",
+                            "Заготовка",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                        return false;
+                    }
+                }
+
+                _stockLifecycle.DeferVoxelShellUntilApproach = true;
+                _stockLifecycle.DeferVoxelUntilRun = false;
+                ApplyStockViewportVisibility(triggerMeshRefresh: false);
                 return true;
             }
             finally
             {
-                if (showModal)
+                if (showLoadingModal)
                 {
                     HideVoxelLoadingWindow();
                 }
             }
         }
 
-        /// <summary>Синхронно дорисовывает все грязные чанки перед стартом цикла (UI не блокируется навсегда — PumpUi).</summary>
-        private void WarmUpStockVisualFullySync(VoxelStock voxelStock)
+        /// <summary>Подготовка заготовки к отображению (параметрическая модель).</summary>
+        private bool PrepareVoxelStockVisual(string loadingMessage, bool showLoadingModal)
         {
-            var profile = VoxelSimulationProfile.ForResolution(_stockLifecycle.VoxelResolutionMm);
-            int chunkBudget = Math.Max(8, profile.DirtyChunkBudget);
-            _suppressCameraDrivenStockRefresh = true;
-            _stockMeshGate.Wait();
+            bool ownsModal = showLoadingModal && _voxelLoadingWindow == null;
+            if (ownsModal)
+            {
+                ShowVoxelLoadingWindow(loadingMessage);
+            }
+            else if (showLoadingModal)
+            {
+                UpdateVoxelLoadingMessage(loadingMessage);
+            }
+
             try
             {
-                while (voxelStock.IsDirty)
+                if (!TryReadStockConfig(out _))
                 {
-                    voxelStock.UpdateVisualsBatchAsync(chunkBudget).GetAwaiter().GetResult();
-                    if (IsStockShownInViewport() && _stockVisual.Content != voxelStock.MainModel)
-                    {
-                        _stockVisual.Content = voxelStock.MainModel;
-                    }
-
-                    PumpUiForLoadingOverlay();
+                    MessageBox.Show(this, "Некорректные параметры заготовки.", "Заготовка", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
                 }
+
+                _stockLifecycle.DeferVoxelUntilRun = false;
+                if (_stockLifecycle.Stock == null &&
+                    !_stockLifecycle.TryEnsureVoxelRuntime(false, GetSelectedStockColor()))
+                {
+                    return false;
+                }
+
+                ApplyStockViewportVisibility(triggerMeshRefresh: false);
+                if (_stockLifecycle.Stock is VoxelStockVolume d3dReady)
+                {
+                    RefreshVoxelStockDisplay(d3dReady);
+                }
+
+                return true;
             }
             finally
             {
-                _stockMeshGate.Release();
-                _suppressCameraDrivenStockRefresh = false;
-            }
-        }
-
-        /// <summary>Дорисовывает воксельный меш заготовки чанками, отдавая кадры UI (без отдельного модального окна).</summary>
-        private async Task WarmUpStockVisualFullyAsync()
-        {
-            if (_stockLifecycle.Stock is not VoxelStock voxelStock)
-            {
-                return;
-            }
-
-            var profile = VoxelSimulationProfile.ForResolution(_stockLifecycle.VoxelResolutionMm);
-            int chunkBudget = Math.Max(8, profile.DirtyChunkBudget);
-            _suppressCameraDrivenStockRefresh = true;
-            await _stockMeshGate.WaitAsync();
-            try
-            {
-                while (voxelStock.IsDirty)
+                if (ownsModal)
                 {
-                    await voxelStock.UpdateVisualsBatchAsync(chunkBudget);
-                    if (IsStockShownInViewport() && _stockVisual.Content != voxelStock.MainModel)
-                    {
-                        _stockVisual.Content = voxelStock.MainModel;
-                    }
-
-                    await Dispatcher.Yield(DispatcherPriority.Background);
+                    HideVoxelLoadingWindow();
                 }
-            }
-            finally
-            {
-                _stockMeshGate.Release();
-                _suppressCameraDrivenStockRefresh = false;
             }
         }
 
@@ -4524,8 +3515,8 @@ M30";
         }
 
         /// <summary>
-        /// Обновляет параметрический меш заготовки (форма из конструктора или бокс по полям Min/Max).
-        /// Воксельный runtime сбрасывается; пересоздание — только через <see cref="TryEnsureVoxelStock"/>.
+        /// Обновляет параметрический меш заготовки (ручные Min/Max, смена разрешения).
+        /// Сбрасывает воксельный runtime; после конструктора заготовки используйте <see cref="ApplyStockConstructor"/>.
         /// </summary>
         private void ApplyStock()
         {
@@ -4605,7 +3596,7 @@ M30";
                 ApplyPreparedProgram(prepared);
 
                 _lastMessageToolNumber = null;
-                _lastPosition = _programPlaybackHost.CurrentPosition;
+                SyncCutTrackingFromMachinePosition(_programPlaybackHost.CurrentPosition);
                 _interpolationProgress = _programPlaybackHost.InterpolationProgress;
                 _tools.Clear();
                 foreach (var t in loadResult.ToolNumbers)
@@ -4691,8 +3682,9 @@ M30";
                 return;
             }
 
-            _lastPosition = GetCurrentPosition();
-            _programPlaybackHost.SetCurrentPosition(_lastPosition);
+            Point3D machinePos = GetCurrentPosition();
+            SyncCutTrackingFromMachinePosition(machinePos);
+            _programPlaybackHost.SetCurrentPosition(machinePos);
             _programPlaybackHost.BeginSegmentFromCurrentPosition();
             int selectedLine = _programLine.SelectedIndex + 1;
             SyncToolWithState();
@@ -4717,6 +3709,7 @@ M30";
         private static void UpdateFanucMachinePosition(FanucPanelControl fanucPanel, MachineState state)
         {
             var activeOffset = state.GetActiveWorkOffset();
+            state.MachineTipToProgram(state.X, state.Y, state.Z, out double tipX, out double tipY, out double tipZ);
             fanucPanel.UpdateMachinePosition(
                 state.X,
                 state.Y,
@@ -4726,7 +3719,10 @@ M30";
                 state.MachineZeroOffsetZ,
                 activeOffset.X,
                 activeOffset.Y,
-                activeOffset.Z);
+                activeOffset.Z,
+                tipX,
+                tipY,
+                tipZ);
         }
 
         private void UpdateFanucMachinePosition(MachineState state) =>
@@ -4734,6 +3730,25 @@ M30";
 
         private void UpdateFanucMachinePosition(MachineStateChangedEvent evt)
         {
+            if (_currentParser?.State is MachineState state)
+            {
+                state.MachineTipToProgram(evt.X, evt.Y, evt.Z, out double tipX, out double tipY, out double tipZ);
+                FanucPanel.UpdateMachinePosition(
+                    evt.X,
+                    evt.Y,
+                    evt.Z,
+                    evt.MachineZeroOffsetX,
+                    evt.MachineZeroOffsetY,
+                    evt.MachineZeroOffsetZ,
+                    evt.OffsetX,
+                    evt.OffsetY,
+                    evt.OffsetZ,
+                    tipX,
+                    tipY,
+                    tipZ);
+                return;
+            }
+
             FanucPanel.UpdateMachinePosition(
                 evt.X,
                 evt.Y,
@@ -4888,6 +3903,15 @@ M30";
                     default,
                     Colors.White);
             }
+        }
+
+        private static bool IsActiveCutMotion(Point3D from, Point3D to)
+        {
+            double dx = to.X - from.X;
+            double dy = to.Y - from.Y;
+            double dz = to.Z - from.Z;
+            return dx * dx + dy * dy + dz * dz >=
+                   VoxelConstants.CutMotionEpsilonMm * VoxelConstants.CutMotionEpsilonMm;
         }
 
         private Point3D MapPhysicalToToolpathLocal(Point3D physical, MachineState state)
@@ -5073,7 +4097,7 @@ M30";
 
         protected override void OnClosed(EventArgs e)
         {
-            _stockLifecycle.CutWorker?.Dispose();
+            _stockLifecycle.ReleaseRuntime();
             _machineStateSubscription.Dispose();
             _alarmSubscription.Dispose();
             _mdiModeSubscription.Dispose();
@@ -5121,7 +4145,6 @@ M30";
                 disposableMachineCore.Dispose();
             }
 
-            _stockMeshGate.Dispose();
             base.OnClosed(e);
         }
 

@@ -1,0 +1,340 @@
+<Window x:Class="CNCSS.UI.Dialogs.ToolSettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:hx="http://helix-toolkit.org/wpf"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:dialogs="clr-namespace:CNCSS.UI.Dialogs"
+        mc:Ignorable="d"
+        Title="TOOLS — параметр"
+        Width="880"
+        Height="672"
+        MinWidth="660"
+        MinHeight="460"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="#FFB0B0B0">
+
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/CNCSS.Visualization;component/UI/Themes/FanucPanelResources.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+
+        <Style x:Key="FanucToolCombo" TargetType="ComboBox">
+            <Setter Property="FontFamily" Value="Consolas"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="#FF0F2A38"/>
+            <Setter Property="BorderBrush" Value="#FF4A9EAF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="4,3"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+
+        <Style x:Key="FanucRemoveRowButtonStyle" TargetType="Button" BasedOn="{StaticResource FanucKeyBaseStyle}">
+            <Setter Property="Width" Value="24"/>
+            <Setter Property="Height" Value="24"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Background" Value="#FFFFECEC"/>
+            <Setter Property="BorderBrush" Value="#FFCC6060"/>
+            <Setter Property="Foreground" Value="#FFB71C1C"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="ToolTip" Value="Удалить инструмент из библиотеки"/>
+        </Style>
+
+        <DataTemplate DataType="{x:Type dialogs:ToolEditRowViewModel}">
+            <Grid Margin="0,0,0,10">
+                <Border Margin="2"
+                        Padding="10,10,34,10"
+                        BorderBrush="{StaticResource FanucProgCyanBorderBrush}"
+                        BorderThickness="1"
+                        Background="{StaticResource FanucProgDisplayBrush}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="164"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0"
+                                BorderBrush="#FF3C4950"
+                                BorderThickness="2"
+                                CornerRadius="0"
+                                Background="#FF1A2024"
+                                Width="154"
+                                Height="154"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Top">
+                            <hx:HelixViewport3D RotateGesture="RightClick"
+                                                ZoomGesture="MiddleClick"
+                                                ZoomExtentsWhenLoaded="True"
+                                                ShowCoordinateSystem="False"
+                                                ShowViewCube="False">
+                                <hx:DefaultLights/>
+                                <ModelVisual3D Content="{Binding PreviewModel}"/>
+                            </hx:HelixViewport3D>
+                        </Border>
+
+                        <ScrollViewer Grid.Column="1"
+                                      Margin="12,0,0,0"
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Disabled">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource FanucLabelStyle}" Margin="0,0,0,6" FontSize="13" Text="ТИП"/>
+
+                                <ComboBox Style="{StaticResource FanucToolCombo}"
+                                          Margin="0,0,0,12"
+                                          HorizontalAlignment="Left"
+                                          Width="260"
+                                          ItemsSource="{Binding ToolKinds}"
+                                          SelectedItem="{Binding SelectedType, Mode=TwoWay}"/>
+
+                                <DockPanel Margin="0,5,12,6">
+                                    <TextBlock DockPanel.Dock="Left" Width="168" Style="{StaticResource FanucLabelStyle}" Text="Номер (T):"/>
+                                    <TextBox DockPanel.Dock="Right" Margin="14,0,0,0" Style="{StaticResource FanucToolFieldTextBox}" Text="{Binding NumberText, UpdateSourceTrigger=PropertyChanged}"/>
+                                </DockPanel>
+                                <DockPanel Margin="0,0,12,6">
+                                    <TextBlock DockPanel.Dock="Left" Width="168" Style="{StaticResource FanucLabelStyle}" Text="Диаметр (мм):"/>
+                                    <TextBox Margin="14,0,0,0" Style="{StaticResource FanucToolFieldTextBox}" Text="{Binding DiameterText, UpdateSourceTrigger=PropertyChanged}"/>
+                                </DockPanel>
+                                <DockPanel Margin="0,0,12,6">
+                                    <TextBlock DockPanel.Dock="Left" Width="168" Style="{StaticResource FanucLabelStyle}" Text="Державка D (мм):"/>
+                                    <TextBox Margin="14,0,0,0" Style="{StaticResource FanucToolFieldTextBox}" Text="{Binding ShankDiameterText, UpdateSourceTrigger=PropertyChanged}"/>
+                                </DockPanel>
+                                <DockPanel Margin="0,0,12,6">
+                                    <TextBlock DockPanel.Dock="Left" Width="168" Style="{StaticResource FanucLabelStyle}" Text="Длина режущей части:"/>
+                                    <TextBox Margin="14,0,0,0" Style="{StaticResource FanucToolFieldTextBox}" Text="{Binding FluteLengthText, UpdateSourceTrigger=PropertyChanged}"/>
+                                </DockPanel>
+                                <DockPanel Margin="0,0,12,6">
+                                    <TextBlock DockPanel.Dock="Left" Width="168" Style="{StaticResource FanucLabelStyle}" Text="Общая длина:"/>
+                                    <TextBox Margin="14,0,0,0" Style="{StaticResource FanucToolFieldTextBox}" Text="{Binding OverallLengthText, UpdateSourceTrigger=PropertyChanged}"/>
+                                </DockPanel>
+                                <DockPanel Margin="0,0,12,6">
+                                    <TextBlock DockPanel.Dock="Left" Width="168" Style="{StaticResource FanucLabelStyle}" Text="Число зубьев:"/>
+                                    <TextBox Margin="14,0,0,0" Style="{StaticResource FanucToolFieldTextBox}" Text="{Binding FlutesText, UpdateSourceTrigger=PropertyChanged}"/>
+                                </DockPanel>
+                                <DockPanel Margin="0,0,12,6">
+                                    <DockPanel.Style>
+                                        <Style TargetType="DockPanel">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsDrillRow}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DockPanel.Style>
+                                    <TextBlock DockPanel.Dock="Left" Width="168" Style="{StaticResource FanucLabelStyle}" Text="Угол при вершине (°):"/>
+                                    <TextBox Margin="14,0,0,0" Style="{StaticResource FanucToolFieldTextBox}" Text="{Binding PointAngleText, UpdateSourceTrigger=PropertyChanged}"/>
+                                </DockPanel>
+                                <DockPanel Margin="0,0,12,2">
+                                    <TextBlock DockPanel.Dock="Left"
+                                               Width="168"
+                                               Margin="0,4,0,0"
+                                               VerticalAlignment="Top"
+                                               Style="{StaticResource FanucLabelStyle}"
+                                               Text="Цвет:"/>
+                                    <StackPanel Margin="14,0,0,0">
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                            <TextBlock Style="{StaticResource FanucLabelStyle}"
+                                                       FontSize="10"
+                                                       VerticalAlignment="Center"
+                                                       Margin="0,0,8,0"
+                                                       Text="Сейчас:"/>
+                                            <Border Width="48"
+                                                    Height="22"
+                                                    BorderBrush="{StaticResource FanucProgCyanBorderBrush}"
+                                                    BorderThickness="1">
+                                                <Rectangle>
+                                                    <Rectangle.Fill>
+                                                        <SolidColorBrush Color="{Binding SelectedFluteColor}"/>
+                                                    </Rectangle.Fill>
+                                                </Rectangle>
+                                            </Border>
+                                        </StackPanel>
+                                        <ItemsControl ItemsSource="{Binding PaletteSwatches}">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel MaxWidth="360"/>
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Button Width="24"
+                                                            Height="24"
+                                                            Margin="3"
+                                                            Padding="0"
+                                                            Cursor="Hand"
+                                                            Command="{Binding DataContext.SetFluteColorCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                            CommandParameter="{Binding}">
+                                                        <Button.Template>
+                                                            <ControlTemplate TargetType="Button">
+                                                                <Border x:Name="sw"
+                                                                        CornerRadius="1"
+                                                                        BorderBrush="#FF3C5866"
+                                                                        BorderThickness="1"
+                                                                        SnapsToDevicePixels="True">
+                                                                    <Border.Background>
+                                                                        <SolidColorBrush Color="{Binding}"/>
+                                                                    </Border.Background>
+                                                                </Border>
+                                                                <ControlTemplate.Triggers>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter TargetName="sw" Property="BorderBrush" Value="#FF0F4A54"/>
+                                                                    </Trigger>
+                                                                </ControlTemplate.Triggers>
+                                                            </ControlTemplate>
+                                                        </Button.Template>
+                                                    </Button>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <Button Margin="0,8,0,0"
+                                                HorizontalAlignment="Left"
+                                                MinWidth="170"
+                                                Style="{StaticResource FanucPanelButton}"
+                                                Content="Другой цвет…"
+                                                Command="{Binding PickCustomColorCommand}"/>
+                                    </StackPanel>
+                                </DockPanel>
+
+                                <TextBlock Margin="2,12,8,2"
+                                           FontFamily="Consolas"
+                                           FontSize="10"
+                                           Foreground="#FF3C5866"
+                                           TextWrapping="Wrap"
+                                           Text="Превью: вращение — ПКМ, масштаб — колесо над окном превью."/>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </Border>
+
+                <Button Style="{StaticResource FanucRemoveRowButtonStyle}"
+                        Margin="10,14,14,0"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Top"
+                        Content="✕"
+                        Click="RemoveRowButton_Click"/>
+            </Grid>
+        </DataTemplate>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Border Style="{StaticResource FanucBezelOuter}">
+        <Border Style="{StaticResource FanucBezelInner}">
+
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="18"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <Grid Background="#FFE8D400" SnapsToDevicePixels="True">
+                    <TextBlock HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Text="FANUC"
+                               FontFamily="Segoe UI"
+                               FontSize="10"
+                               FontWeight="Bold"
+                               Foreground="#FFCC0000"/>
+                </Grid>
+
+                <Border Grid.Row="1"
+                        Margin="0,6,0,8"
+                        Background="{StaticResource FanucProgCyanBrush}"
+                        BorderBrush="{StaticResource FanucProgCyanBorderBrush}"
+                        BorderThickness="1"
+                        Padding="16,5,16,7">
+                    <StackPanel>
+                        <TextBlock Text="TOOL DATA — библиотека инструментов"
+                                   FontFamily="Consolas"
+                                   FontSize="17"
+                                   FontWeight="Bold"
+                                   Foreground="#FF0F2A38"/>
+                        <TextBlock Margin="0,4,0,0"
+                                   TextWrapping="Wrap"
+                                   FontFamily="Consolas"
+                                   FontSize="11"
+                                   Foreground="#FF0F4A54"
+                                   Opacity="0.95">
+                            Параметры в симуляцию передаются только кнопкой «Применить». Номер строки задаёт связь с <Run>T1</Run>, <Run>T2</Run> … в УП. Отсутствующие номера вызовут предупреждение; при желании сохраните текущие строки («Да» в диалоге).
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="2"
+                        Background="{StaticResource FanucProgDisplayBrush}"
+                        BorderBrush="#FF3C4950"
+                        BorderThickness="2"
+                        Padding="8">
+
+                    <Grid>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <ItemsControl x:Name="RowsHost"
+                                          ItemsSource="{Binding Rows}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <StackPanel Orientation="Vertical"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                            </ItemsControl>
+                        </ScrollViewer>
+
+                        <TextBlock x:Name="EmptyHint"
+                                   Visibility="Collapsed"
+                                   VerticalAlignment="Center"
+                                   HorizontalAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   MaxWidth="480"
+                                   TextAlignment="Center"
+                                   FontFamily="Consolas"
+                                   FontSize="13"
+                                   Foreground="#FF0F4A54"
+                                   IsHitTestVisible="False"/>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="3" Margin="0,8,0,4" Padding="0,2">
+                    <TextBlock FontFamily="Consolas"
+                               FontSize="10"
+                               Foreground="#FF3C5866">
+                        «Применить» сохраняет параметры; окно остаётся открытым. Если в УП есть T, для которых нет строки, появится предупреждение; по «Да» изменения применятся к перечисленным инструментам.
+                    </TextBlock>
+                </Border>
+
+                <StackPanel Grid.Row="4"
+                            Orientation="Horizontal"
+                            HorizontalAlignment="Right">
+
+                    <Button Margin="8,6,10,6"
+                            MinWidth="150"
+                            Style="{StaticResource FanucPanelButton}"
+                            Content="Новый инструмент"
+                            ToolTip="Добавить инструмент (черновые значения задаются здесь до «Применить»)."
+                            Click="NewToolButton_Click"/>
+
+                    <Button x:Name="ApplyButton"
+                            MinWidth="120"
+                            Margin="0,6,6,6"
+                            Style="{StaticResource ApplyToolChangesButton}"
+                            Content="Применить"
+                            IsDefault="True"
+                            Click="ApplyButton_Click"/>
+
+                    <Button MinWidth="100"
+                            Margin="0,6,0,6"
+                            Style="{StaticResource FanucPanelButton}"
+                            Content="Закрыть"
+                            IsCancel="True"
+                            Click="CloseButton_Click"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Border>
+</Window>

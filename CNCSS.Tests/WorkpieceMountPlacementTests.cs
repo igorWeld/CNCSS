@@ -219,4 +219,43 @@ public sealed class WorkpieceMountPlacementTests
         Assert.Equal(-69.653, backInMcs.Y, 2);
         Assert.Equal(-460, backInMcs.Z, 2);
     }
+
+    [Fact]
+    public void ProgramTableLocal_MustNotPassThroughSceneToTableLocal()
+    {
+        WorkpieceMountPlacement.ClearWcsOriginTableLocalCache();
+        var def = MachineDefinition.CreateDefault();
+        var seed = new MachineState();
+        def.ApplyHomeToMachineState(seed);
+        seed.SetWorkOffset(54, 0, 0, 0);
+
+        WorkpieceMountPlacement.SyncWcsOriginTableLocalFromMcs(
+            def,
+            new Dictionary<int, (double X, double Y, double Z)> { [54] = (0, 0, 0) },
+            seed.X,
+            seed.Y,
+            seed.Z);
+
+        var parser = new GCodeParser(seed.Clone());
+        parser.ProcessLine("G54 G90 G0 X10 Y20 Z5", 1);
+        Point3D programTableLocal = WorkpieceMountPlacement.PhysicalProgramToTableLocal(
+            def,
+            parser.State,
+            parser.State.X,
+            parser.State.Y,
+            parser.State.Z);
+
+        Point3D wronglyRemapped = TableSceneTransforms.SceneToTableLocal(
+            def,
+            parser.State.X,
+            parser.State.Y,
+            parser.State.Z,
+            programTableLocal);
+
+        Assert.True(
+            Math.Abs(wronglyRemapped.X - programTableLocal.X) > 1.0 ||
+            Math.Abs(wronglyRemapped.Y - programTableLocal.Y) > 1.0 ||
+            Math.Abs(wronglyRemapped.Z - programTableLocal.Z) > 1.0,
+            "SceneToTableLocal must not be applied to points already in table-local program space");
+    }
 }
